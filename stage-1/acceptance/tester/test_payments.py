@@ -238,3 +238,14 @@ def test_precedence_missing_key_before_fields(world):
                  400, "missing_idempotency_key")
     expect_error(world.ada.post("/payments", json={"to_handle": "nobody", "amount": 1}),
                  400, "missing_idempotency_key")
+
+
+def test_precedence_wrong_type_400_beats_any_422(world):
+    """[D1 step 7, DECISION Q3] a 400 wrong-type field wins over a 422 on another field."""
+    expect_error(world.ada.pay(5, 0), 400, "malformed_request")
+    expect_error(world.ada.pay(None, 1, note="x" * 201, visibility="nope"),
+                 400, "malformed_request")
+    expect_error(world.ada.post("/requests", json={"payer_handle": ["bob"], "amount": "x"},
+                                key=new_key()), 400, "malformed_request")
+    expect_error(world.ada.split(0, "bob"), 400, "malformed_request")
+    expect_error(world.ada.split(10, ["bob", 7], note=None), 400, "malformed_request")
