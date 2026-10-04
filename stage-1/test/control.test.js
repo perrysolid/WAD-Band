@@ -165,6 +165,21 @@ test('R12 large seeded reset is fast and logins work (D14)', async () => {
   const logins = await Promise.all(Array.from({ length: 50 }, (_, i) => t.call('POST', '/auth/login', { body: { email: `u${i}@x.io`, password: `pw-${i}-secret` } })));
   assert.ok(logins.every((r) => r.status === 200));
   assert.ok(Date.now() - t0 < 5000);
+  const many = users.map((u, i) => ({ ...u, password: `pw-${i}-secret` }));
+  t0 = Date.now();
+  await t.reset(fixture({ users: many }));
+  assert.ok(Date.now() - t0 < 6000, `10 000 distinct passwords took ${Date.now() - t0} ms`);
+  assert.ok(await t.login('u9999@x.io', 'pw-9999-secret'));
+  await assert.rejects(t.login('u9999@x.io', 'pw-9998-secret'));
+});
+
+test('D14 seeded scrypt cost scales down with the number of distinct passwords', () => {
+  const { seedCost } = require('../src/hash');
+  assert.equal(seedCost(1).N, 1 << 12);
+  assert.equal(seedCost(500).N, 1 << 12);
+  assert.equal(seedCost(2000).N, 1 << 10);
+  assert.equal(seedCost(10000).N, 1 << 8);
+  assert.ok(seedCost(10 ** 7).N >= 16);
 });
 
 test('R35 R36 unknown routes and later-stage surfaces are 404', async () => {

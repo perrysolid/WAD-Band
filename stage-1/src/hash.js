@@ -3,9 +3,18 @@
 const crypto = require('node:crypto');
 
 const API_COST = { N: 1 << 14, r: 8, p: 1 };
-const SEED_COST = { N: 1 << 12, r: 8, p: 1 };
-const SEED_COST_BULK = { N: 1 << 10, r: 8, p: 1 }; // many distinct seeded passwords
-const BULK_THRESHOLD = 500;
+// Seeded credentials (D14): N = 2^12 normally; for large fixtures with many
+// distinct plaintexts N scales down so all hashing stays within about 3 s on
+// 2 vCPU (one hash costs roughly N * 2 µs per core), well inside the 10 s reset limit.
+const SEED_MAX_N = 1 << 12;
+const SEED_MIN_N = 1 << 4;
+const SEED_BUDGET = 3e6; // distinct * N must stay at or below this
+
+function seedCost(distinct) {
+  let N = SEED_MAX_N;
+  while (N > SEED_MIN_N && distinct * N > SEED_BUDGET) N >>= 1;
+  return { N, r: 8, p: 1 };
+}
 const KEYLEN = 32;
 
 function scrypt(password, saltHex, cost) {
@@ -33,7 +42,7 @@ async function verifyPassword(password, cred) {
 // Hash every distinct plaintext once; returns Map plaintext -> credential.
 async function hashSeedPasswords(passwords) {
   const distinct = [...new Set(passwords)];
-  const cost = distinct.length > BULK_THRESHOLD ? SEED_COST_BULK : SEED_COST;
+  const cost = seedCost(distinct.length);
   const creds = await Promise.all(distinct.map((p) => hashPassword(p, cost)));
   const out = new Map();
   distinct.forEach((p, i) => out.set(p, creds[i]));
@@ -48,4 +57,4 @@ function newToken() {
   return crypto.randomBytes(32).toString('hex');
 }
 
-module.exports = { hashPassword, verifyPassword, hashSeedPasswords, tokenDigest, newToken };
+module.exports = { seedCost, hashPassword, verifyPassword, hashSeedPasswords, tokenDigest, newToken };
