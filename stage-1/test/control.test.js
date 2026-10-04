@@ -44,6 +44,11 @@ test('R4 invalid fixtures are 422 and change nothing', async () => {
     expectError(assert, await t.call('POST', '/_test/reset', { body: fx }), 422, 'validation_failed');
   }
   expectError(assert, await t.call('POST', '/_test/reset', { raw: '{' }), 400, 'malformed_request');
+  // D18: a fixture that parses but is not an object is a fixture error
+  for (const raw of ['[]', '"x"', '7', 'null']) {
+    expectError(assert, await t.call('POST', '/_test/reset', { raw }), 422, 'validation_failed');
+    expectError(assert, await t.call('POST', '/_test/import', { raw }), 422, 'validation_failed');
+  }
   assert.equal(await t.balance(w.ada), 10000);
 });
 

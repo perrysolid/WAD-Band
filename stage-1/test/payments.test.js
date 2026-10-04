@@ -66,6 +66,8 @@ test('R15 field error precedence (D1, D2, D7)', async () => {
   expectError(assert, await p({ to_handle: 'bob', amount: 999999999, note: 'x'.repeat(201) }), 422, 'validation_failed');
   expectError(assert, await t.call('POST', '/payments', { token: w.ada, key: newKey(), raw: 'not json' }), 400, 'malformed_request');
   expectError(assert, await t.call('POST', '/payments', { token: w.ada, key: newKey(), raw: '' }), 400, 'malformed_request');
+  expectError(assert, await t.call('POST', '/payments', { token: w.ada, key: newKey(), raw: '\ufeff{"to_handle":"bob","amount":1}' }), 400, 'malformed_request');
+  expectError(assert, await t.call('POST', '/payments', { token: w.ada, key: newKey(), raw: '{"a":1}{"b":2}' }), 400, 'malformed_request');
   expectError(assert, await t.call('POST', '/payments', { raw: 'not json' }), 400, 'malformed_request');
   expectError(assert, await t.call('POST', '/payments', { body: { to_handle: 'bob', amount: 1 } }), 401, 'unauthenticated');
   expectError(assert, await t.call('POST', '/payments', { token: w.ada, body: { to_handle: 'bob', amount: 0 } }), 400, 'missing_idempotency_key');
@@ -126,4 +128,9 @@ test('R28 R25 paging and integer query parameters', async () => {
     expectError(assert, await get(qs), 422, 'validation_failed');
   }
   assert.equal((await get('limit=200')).status, 200);
+  assert.equal((await get(`offset=${'0'.repeat(50)}1`)).status, 200);
+  assert.equal((await get('offset=9007199254740991')).status, 200);
+  for (const qs of [`offset=${'9'.repeat(400)}`, 'offset=9007199254740992', `limit=${'1'.repeat(400)}`, 'limit=-0']) {
+    expectError(assert, await get(qs), 422, 'validation_failed');
+  }
 });

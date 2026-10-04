@@ -121,8 +121,8 @@ function createApp() {
     const raw = q.get(name);
     if (raw === null) return dflt;
     if (!/^[0-9]+$/.test(raw)) invalid(`${name} must be plain decimal digits`);
-    const n = Number(raw.replace(/^0+(?=\d)/, '').slice(0, 20));
-    if (n < min || (max !== undefined && n > max)) invalid(`${name} out of range`);
+    const n = Number(raw);
+    if (!Number.isSafeInteger(n) || n < min || (max !== undefined && n > max)) invalid(`${name} out of range`);
     return n;
   }
 
@@ -529,7 +529,7 @@ function createApp() {
     });
   }
 
-  const decoder = new TextDecoder('utf-8', { fatal: true });
+  const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }); // a BOM is not JSON
 
   function parseBody(buf, mode) {
     if (buf === null) malformed('body too large or unreadable');
@@ -537,7 +537,11 @@ function createApp() {
     try { text = decoder.decode(buf); } catch { malformed('body is not valid UTF-8'); }
     let v;
     try { v = mode === 'api' ? parse(text) : JSON.parse(text); } catch { malformed('body is not valid JSON'); }
-    if (v === null || typeof v !== 'object' || Array.isArray(v) || v instanceof JNum) malformed('body must be a JSON object');
+    if (v === null || typeof v !== 'object' || Array.isArray(v) || v instanceof JNum) {
+      // D18: a test-control body that parses but is not an object is invalid, not malformed
+      if (mode === 'plain') invalid('body must be a JSON object');
+      malformed('body must be a JSON object');
+    }
     return v;
   }
 
