@@ -1,3 +1,124 @@
+# PLAN — pocketful, stage 2 (wallet screens and payment authorizations)
+
+Source: `/Users/parth/Documents/kickoff/pocketful/spec/stage-2.md` ("S2") plus everything in
+`stage-1.md` (§ refs). Folder `stage-2/`. It starts as a byte copy of the ACCEPTED `stage-1/`
+(no nested `.git`), committed unchanged first. Every stage-1 requirement R1–R36 and decision
+D1–D24 (in this same file, below) still holds unless amended here. Stage 2 must implement nothing
+from stage 3 or 4.
+
+## Requirements — API (S2 "Authorizations and captures", "Model", "API")
+
+- **S2-R1** `GET /me` adds `total` and `available` and `held`; `balance == total` always; `held` = Σ remaining of effectively-open holds; `available = total − held` ≥ 0. With no holds, all earlier responses are unchanged apart from the new fields.
+- **S2-R2** Fixture: `authorization_ttl_seconds` (default 600; if present it must be a positive integer per D3, else reset 422); `authorizations` array (default []). Each item has id, from_user_id, to_user_id, amount, note, visibility, status ∈ open|captured|voided|expired, and `expires_at` (RFC 3339 with offset). Unknown user ids, bad values or duplicate ids → 422. Σ of seeded UNEXPIRED open holds > that user's balance → 422, state unchanged. `available` is derived, never seeded. A stage-1-shaped fixture (no new keys) works unchanged.
+- **S2-R3** `POST /authorizations` (idempotent; caller = payer) → 201 `{authorization_id, from_user_id, from_handle, to_user_id, to_handle, amount, captured_amount:0, remaining_amount:amount, currency, note, visibility, status:"open", expires_at = created_at + ttl, payment_id:null, payment_ids:[], created_at}`. Errors use the payment order: amount 422 → self_payment 422 → note 422 → visibility 422 → unknown handle 404 → available < amount 409 `insufficient_funds`. An open hold is never a feed item.
+- **S2-R4** `POST /authorizations/{id}/capture` (idempotent; receiver only). Body `{amount?, final?}`; amount defaults to the remainder; `final` boolean, default true. 201 → a payment in the `POST /payments` shape plus `authorization_id`, with `request_id:null`, `settlement_id:null`, amount = captured, note and visibility copied from the authorization. It appears in `/activity` by the normal rule.
+- **S2-R5** A final capture → status `captured` and releases the remainder in the same step. `final:false` with amount < remainder keeps status `open` and the remainder held. Capturing the entire remainder closes it even with `final:false`. `captured_amount` is cumulative, `payment_id` is the latest capture, `payment_ids` lists every capture in order, and `remaining_amount` is 0 once closed. Void or expiry after partial captures releases only the remainder and keeps the capture records.
+- **S2-R6** Capture errors (order per D25): amount < 1 or non-integer → 422 `validation_failed`; `final` not a boolean → 400; unknown → 404; caller not receiver (incl. third party) → 403; captured/voided → 409 `authorization_not_open`; expires_at ≤ now (incl. seeded `expired`) → 409 `authorization_expired`; amount > remainder → 422 `capture_exceeds_authorization`. `{}` vs `{"amount":2000}` under one key → 409 reuse. A replay returns 200 with the original payment even after the authorization closed.
+- **S2-R7** `POST /authorizations/{id}/void` (payer only, no key) → 200 authorization `voided`, hold released. Voiding again → 200 with the current state. Captured or expired → 409 `authorization_not_open`. Non-payer (incl. third party) 403; unknown 404.
+- **S2-R8** `GET /authorizations`: only those where the caller is payer or receiver. Newest first. `direction` outgoing|incoming; `status` open|captured|voided|expired (a clock-expired hold matches `expired`, never `open`). limit/offset/has_more as R24/R25/D20a. Invalid enum values → 422.
+- **S2-R9** Expiry: a hold with `expires_at` ≤ now is `expired` and holds nothing, at every read and write (`/me`, `/authorizations`, capture, void, every funds check), with no background job. Expiry at exactly expires_at counts as expired.
+- **S2-R10** Every `insufficient_funds` (payments, request pay, settlements, authorizations) is evaluated against `available`. For settlements: every wallet's `available + net` ≥ 0. Captures may spend the money reserved for them.
+- **S2-R11** Invariants under 50 concurrent writers: Σ total = seeded total; available ≥ 0 for every user; Σ captures ≤ authorized amount; each idempotent capture moves money once; a closed hold can't be captured again; concurrent capture/void/expiry on one hold serialize.
+- **S2-R12** Every payment now carries `authorization_id` (null unless it is a capture). Everything else from stage 1 is unchanged, including `request_id` and `settlement_id`. Seven idempotent write paths.
+- **S2-R13** Upgrade: `POST /_test/import` accepts an unchanged stage-1 export (schema_version 1) and a stage-2 export (schema_version 2). Tokens, logins, balances, pending requests (still payable), idempotency replays (incl. a payment whose response was lost before the export) and id sequences all survive. A stage-2 export round-trips authorizations (all fields, statuses, capture lists), ttl, hold state and counters.
+
+## Requirements — browser UI (S2 screens, testids, behaviour)
+
+- **S2-U1 Routes**: `/`, `/requests`, `/split`, `/signup`, `/login`, `/authorizations` load directly by URL (deep link, no 404). `/requests` and `/authorizations` serve HTML only when `Accept` includes `text/html`; otherwise the JSON API (D26). `/login` and `/signup` render their forms even when already signed in. A signed-out visit to `/`, `/requests`, `/split` or `/authorizations` goes to `/login`. Navigation between screens is consistent and visible on every screen.
+- **S2-U2 Auth**: signup/login testids. `auth-error` is present only when there is an error. `current-user` (contains the display name) is on every screen when signed in. `current-handle` text is exactly the handle. `logout-button` signs out. A successful login/signup lands on `/`.
+- **S2-U3 Wallet** (on `/` and `/authorizations`):
+  - `wallet-available` is the headline number, with `data-amount`.
+  - `wallet-balance` = formatted total, with `data-amount`.
+  - `wallet-held` with `data-amount`, absent when held = 0.
+  - Each text is EXACTLY the formatted amount (D27), with no labels inside the element.
+  - `wallet-refresh` refreshes the balance + feed without clearing the pay form.
+- **S2-U4 Amount input** (pay, request, split, authorize, capture): decimal as typed. `15`, `15.0`, `15.00` → 1500; `15.5` → 1550 (minor_units 2). Nonnumeric, negative, or more than `minor_units` decimals → the form's error element and NO request. Conversion is exact string arithmetic, never floats (D28).
+- **S2-U5 Pay form**:
+  - Values are kept after success.
+  - An unchanged resubmission reuses the same Idempotency-Key and body: money moves once, no `pay-error`.
+  - Any field change → a new key (D29).
+  - Refused (4xx) → `pay-error`, refresh balance + feed, keep all inputs.
+  - Lost response (network error, abort, timeout, 5xx, 408, 429) → `pay-uncertain` (non-empty), not `pay-error`; the form stays retryable with the same key and body.
+  - A successful retry removes both elements, refreshes, and moves money exactly once.
+  - `pay-visibility` is a select with values `public` and `private`.
+- **S2-U6 Request form** (on `/`): request-* testids; `request-error` on refusal. Same key rules as pay.
+- **S2-U7 Feed** (on `/`):
+  - `activity-list` children are newest first in the DOM, one `activity-item-{payment_id}` per visible payment, with `data-visibility`.
+  - `activity-parties-{id}` text contains BOTH handles.
+  - `activity-amount-{id}` text is exactly the formatted amount (no sign).
+  - `activity-note-{id}` text is exactly the note, and is present even when the note is empty.
+  - `empty-activity` replaces `activity-list` when nothing is visible.
+- **S2-U8 Requests** (`/requests`):
+  - `incoming-list` and `outgoing-list` are always present. `request-item-{id}` has `data-status`; `request-amount-{id}` is exact.
+  - Pay and decline buttons appear only on pending incoming items; cancel only on pending outgoing ones.
+  - A refused pay/decline/cancel → `request-error` and a refresh of the lists, so a stale button disappears.
+  - `empty-requests` appears when both lists are empty.
+  - After any success, the lists refresh.
+- **S2-U9 Split** (`/split`): `split-amount` follows the U4 rule. `split-handles` is comma-separated, trimmed, with empties dropped and one leading `@` stripped. `split-preview` shows one `split-share-{handle}` per participant before submit; its text is exactly the formatted share per §9 and identical to what the server computes. `split-error` appears on refusal.
+- **S2-U10 Authorizations** (`/authorizations`, and the authorize form also on `/` per D30):
+  - The authorize-* form follows the pay rules; `authorize-error` appears on refusal, including insufficient available funds.
+  - `authorization-list` is newest first; `empty-authorizations` replaces it when empty.
+  - Each `authorization-item-{id}` has `data-status`. Its parts are:
+    - `authorization-amount-{id}`: exact.
+    - `authorization-captured-{id}`: only when status is `captured`.
+    - `authorization-expires-{id}`: the RFC 3339 `expires_at` exactly as the API returns it.
+    - `authorization-capture-amount-{id}`: prefilled with the remainder (formatted decimal, no currency), and `authorization-capture-{id}`; both only on incoming open items.
+    - `authorization-void-{id}`: only on outgoing open items.
+  - `authorization-error` appears on a refused capture/void, followed by a refresh.
+  - Seeded and new holds show correctly right after a reset.
+- **S2-U11 Refresh rules**:
+  - After any successful action, the same page shows the new balance, feed and lists without a manual reload, and refreshes only after the write succeeded.
+  - Latest refresh wins: every load carries a sequence number per data domain, and a response older than the latest issued is discarded, even when responses arrive out of order (D31).
+- **S2-U12 Upgrade**: the token lives in `localStorage`, so a signed-in browser stays signed in across an export/import between requests. In-memory form + key state survives, with no reload needed. A payment whose response was lost before the upgrade is retried with the same key and body, recovers the original payment (200), and refreshes the imported balance.
+- **S2-U13 Self-contained**:
+  - All HTML/JS/CSS/fonts are served from the image (`/assets/...`). No external URL appears anywhere in the served markup, CSS or JS.
+  - Response header `Content-Security-Policy: default-src 'self'` (plus whatever inline policy the build needs; prefer none inline).
+- **S2-U14 Product quality** (S2 "Product and visual direction"):
+  - A calm, trustworthy consumer-finance look with one consistent system: type scale, spacing, colour, controls, feedback.
+  - Primary actions are obvious.
+  - Available, held, pending, loading, successful, refused and uncertain states are visually distinct.
+  - People, amounts and times are formatted for humans (raw ids only where they help).
+  - Works at a 375 px viewport and on desktop with no horizontal page scroll.
+  - Visible labels on every input, visible keyboard focus, WCAG AA contrast.
+  - Considered empty, loading and error states.
+  - `aria-live` for errors and status.
+
+## DECISIONS (stage 2; stage-1 D1–D24 + D20a still apply)
+
+- **D25 Capture/void precedence**: body parse → 401 → key → claimed key → wrong-type 400 (`final`) → 422 `validation_failed` (amount) → 404 → 403 → 409 `authorization_not_open` (captured/voided) → 409 `authorization_expired` (clock-expired or stored expired) → 422 `capture_exceeds_authorization`. Void: 404 → 403 → voided = 200 current state; captured or expired → 409 `authorization_not_open`.
+- **D26 HTML vs JSON**: `GET /`, `/split`, `/signup`, `/login` always return the HTML shell. `GET /requests` and `GET /authorizations` return HTML iff the Accept header lists `text/html` with q > 0, otherwise the authenticated JSON API (unchanged errors, 401 without a token). Static files are under `/assets/`. Every other unknown route → 404 JSON (D21).
+- **D27 Money format**: `<integer part>.<exactly minor_units digits> <CURRENCY>`, with no decimal point when minor_units = 0. No thousands separators and no sign inside any testid element. Direction is shown in a separate element.
+- **D28 Decimal parsing**: trim whitespace, then require `^[0-9]+(\.[0-9]{1,mu})?$` (mu = minor_units; integers only when mu = 0). The value must be ≥ 1 minor unit and ≤ 1000000000 minor units. Anything else is a client-side error and nothing is sent.
+- **D29 Form idempotency identity**: each form keeps `{fingerprint, key}`. The fingerprint is the exact JSON body the form would send. On submit, if the fingerprint equals the stored one, the stored key is reused; otherwise a new UUID key is minted and stored. The identity is never cleared on success or refusal; only a change in the fingerprint replaces it. Request-row pay buttons use the identity (request_id + body). Capture buttons use (authorization_id + body).
+- **D30 Placement**: the wallet panel (available headline, total, held, refresh) appears on `/` and `/authorizations`. The authorize form appears on `/authorizations` and as a "Hold money" card on `/`. testids are unique within a page.
+- **D31 Latest-wins**: separate sequence counters for me, activity, requests and authorizations. Explicit refresh, post-action refresh and the initial load all go through the same loader.
+- **D32 Expiry evaluation**: every request computes `now` (monotonic clock) at the start of its synchronous section and first expires every open hold with expires_at ≤ now (min-heap or scan). Expired holds release their remainder. Stage 2 exposes no `closed_at` (that is stage 3).
+- **D33 Seeded authorizations**: optional `captured_amount` (default: `amount` if status is captured, else 0) and optional `payment_id` (default null). `created_at` = the reset instant. A seeded open hold whose expires_at ≤ reset time is expired. Seeded statuses voided/captured/expired hold nothing.
+- **D34 State format**: export `state.schema_version = 2`. Import accepts 1 (upgraded: no authorizations, ttl 600, payments get `authorization_id: null`) and 2. Higher versions → 422.
+- **D35 Timestamps (amends D10)**: output is UTC `+00:00`. Fractional seconds are printed as `.mmm` only when the millisecond part is non-zero (`2026-09-24T13:20:00+00:00` vs `…:00.250+00:00`). Lexical order still equals time order. Instants are stored in ms internally.
+- **D36 UI stack**: no framework required. Vanilla ES modules + CSS served from the image, plus one vendored open-licence variable font (e.g. Inter woff2) in `stage-2/public/fonts/`, with a system fallback. No build-time network is needed for the UI.
+- **D37 Lost-response classes**: a fetch rejection (network/abort), no response within 8 s, or HTTP 5xx/408/429 → uncertain. Every other 4xx → refused. 2xx → success (201 and replay 200 are treated the same).
+
+## Risk map (stage 2)
+
+1. Conservation and non-negativity with holds → S2-R1, R10, R11 (tester: 50-way authorize/capture/void/pay mixes with an oracle on Σtotal, available ≥ 0, Σcaptures ≤ amount).
+2. Idempotency → S2-R3, R4, R6, R13 and U5/U12 (`{}` vs `{"amount":…}`, replay after close).
+3. Precedence → D25 (tester pairs).
+4. Numbers → capture amount D3; ttl D3 (`600.0` ok, `0`/`-1`/`1.5`/`"600"` → 422).
+5. Hashing → unchanged.
+6. Export/import → S2-R13 and D34 (stage-1 export into stage-2).
+7. Time → S2-R9, D32, D35 (expiry exactly at the deadline, seeded past/future, offsets in fixture `expires_at`).
+8. Browser recovery → U5, U11, U12 (Playwright: double submit, changed field, aborted response then retry, out-of-order refresh, signed-in across import).
+
+## Work items (stage 2)
+
+- **W5 developer**: copy the accepted stage-1 folder to stage-2, commit, then implement S2-R1–R13 and S2-U1–U14 per D25–D37, with unit tests. Gate: unit tests, the tester's stage-2 suite, the stage-1 acceptance suite against the stage-2 build, the runner `--stage 2`, and the upgrade gate (export from a stage-1 container, import into stage-2).
+- **W6 tester**: `stage-2/acceptance/` covers API + Playwright UI + the upgrade (a stage-1 container export into stage-2) + 375 px no-horizontal-scroll + axe-style checks (labels, focus).
+- **W7 reviewer**: clean-clone reproduction, browser walk at 375 px and desktop in every named state, overshoot probe (no closed_at, statement, history, refunds).
+- **W8 architect**: gap pass, runner `claimed stage: 2`, extras after ACCEPT.
+
+---
+
 # PLAN — pocketful, stage 1 (payments and settlements)
 
 Source: `/Users/parth/Documents/kickoff/pocketful/spec/stage-1.md` (§ refs below). Result repo
