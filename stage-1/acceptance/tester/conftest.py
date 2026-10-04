@@ -89,6 +89,11 @@ class World:
         u = next(u for u in self.fx["users"] if u["handle"] == handle)
         return self._api().authenticate(u["email"], u["password"])
 
+    def adopt(self, handle: str, client: Api, seeded: int = 0) -> None:
+        """Track a user created after reset (signup) in the oracle."""
+        self.clients[handle] = client
+        self.seeded[handle] = seeded
+
     def balances(self) -> dict[str, int]:
         return {h: c.balance() for h, c in self.clients.items()}
 

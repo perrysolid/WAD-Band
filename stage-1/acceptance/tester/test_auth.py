@@ -147,11 +147,26 @@ def test_many_tokens_stay_valid_together(world, api):
 
 @pytest.mark.parametrize("header", [None, "", "Bearer", "Bearer ", "Basic YWRhOnB3",
                                     "Bearer not-a-real-token", "Token abc"])
-def test_bad_credentials_are_401(world, api, header):
-    """[§6, §5] missing, malformed or unknown bearer token."""
-    client = api()
-    hdrs = {} if header is None else {"Authorization": header}
-    expect_error(client.get("/me", token=None, headers=hdrs), 401, "unauthenticated")
+def test_bad_credentials_are_401(world, base_url, header):
+    """[§6, §5] missing, malformed or unknown bearer token.
+
+    Sent with http.client because httpx refuses some of these header values client-side.
+    """
+    import http.client
+    import json as _json
+    from urllib.parse import urlsplit
+    u = urlsplit(base_url)
+    conn = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=5)
+    try:
+        conn.putrequest("GET", "/me")
+        if header is not None:
+            conn.putheader("Authorization", header)
+        conn.endheaders()
+        resp = conn.getresponse()
+        body = _json.loads(resp.read() or b"null")
+    finally:
+        conn.close()
+    assert resp.status == 401 and body["error"]["code"] == "unauthenticated", (resp.status, body)
 
 
 AUTHED = [("GET", "/me", None), ("GET", "/activity", None), ("GET", "/requests", None),

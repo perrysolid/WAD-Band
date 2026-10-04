@@ -138,8 +138,9 @@ def test_operators_and_settlement_membership_survive(rich, control, reset):
     expect(w.ada.settle([T("bob", "cy", 1)]), 201)
     expect_error(w.bob.settle([T("ada", "cy", 1)]), 403, "forbidden")
     sid = rec["settlement"]["settlement_id"]
-    members = [p for p in w.bob.feed() if p["settlement_id"] == sid]
-    assert members == [rec["settlement"]["payments"][0]]
+    members = sorted((p for p in w.cy.feed() if p["settlement_id"] == sid),
+                     key=lambda p: p["payment_id"])
+    assert members == sorted(rec["settlement"]["payments"], key=lambda p: p["payment_id"])
 
 
 def test_new_ids_do_not_collide_after_import(rich, control, reset, api):
@@ -251,8 +252,9 @@ def test_import_unparseable_is_400(rich, control, raw):
 @pytest.mark.parametrize("raw", ["[]", "5", "null"])
 def test_import_non_object(rich, control, raw):
     w, rec = rich
+    """[D18 clarification] a parsed non-object import body -> 422, state unchanged."""
     resp = control.post("/_test/import", content=raw, headers={"Content-Type": "application/json"})
-    assert resp.status_code in (400, 422)
+    expect_error(resp, 422, "validation_failed")
     assert w.balances() == rec["balances"]
 
 

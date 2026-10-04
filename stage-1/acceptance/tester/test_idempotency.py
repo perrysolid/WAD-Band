@@ -206,8 +206,10 @@ def test_failed_first_use_404_then_handle_appears(iw, api):
     """[§7] a 404 first use claims nothing."""
     key = new_key()
     expect_error(iw.ada.pay("dee", 5, key=key), 404, "not_found")
-    expect(api().signup("dee@example.com"), 201)
+    tok = expect(api().signup("dee@example.com"), 201).json()["token"]
+    iw.adopt("dee", api(tok))
     expect(iw.ada.pay("dee", 5, key=key), 201)
+    assert iw.dee.balance() == 5
     iw.oracle()
 
 
