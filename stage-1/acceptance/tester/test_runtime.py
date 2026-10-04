@@ -148,13 +148,13 @@ def test_seeded_ids_do_not_collide_with_new_ids(make_world):
 
 def test_large_seeded_reset_within_ten_seconds_and_logins_work(reset, api):
     """[§2, §6] password hashing must not push a big reset past 10 s."""
-    users = [m.user(f"u{i}", 100) for i in range(1000)]
+    users = [m.user(f"u{i}", 100) for i in range(10_000)]
     started = time.monotonic()
     resp = reset(m.fixture(users), raw=True)
     elapsed = time.monotonic() - started
     expect(resp, 204)
-    assert elapsed < 10.0, f"reset of 1000 users took {elapsed:.1f}s"
-    for i in (0, 499, 999):
+    assert elapsed < 10.0, f"reset of 10000 users took {elapsed:.1f}s"
+    for i in (0, 4_999, 9_999):
         assert api().authenticate(f"u{i}@example.com").balance() == 100
     expect_error(api().login("u5@example.com", "wrong password"), 401, "unauthenticated")
 
@@ -172,13 +172,13 @@ def test_large_reset_with_distinct_passwords(reset, api):
 
 
 def test_logins_do_not_block_other_requests(world, base_url):
-    """[§2, §6] 30 concurrent logins (hashing) while a cheap read stays fast."""
-    clients = [Api(base_url) for _ in range(30)]
+    """[§2, §6] 49 concurrent logins (hashing) while a cheap read stays fast."""
+    clients = [Api(base_url) for _ in range(49)]
     reader = world.new_client("bob")
     timings: list[float] = []
 
     def work(i: int):
-        if i == 30:
+        if i == 49:
             out = []
             for _ in range(5):
                 t = time.monotonic()
@@ -188,7 +188,7 @@ def test_logins_do_not_block_other_requests(world, base_url):
         return clients[i].login("ada@example.com")
 
     try:
-        out = m.burst(work, 31)
+        out = m.burst(work, 50)
         m.assert_no_5xx(out)
         assert all(r.status_code == 200 for r in out), m.tally(out)
         assert max(timings) < 3.0, f"GET /me stalled behind logins: {timings}"

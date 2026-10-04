@@ -334,12 +334,12 @@ def test_concurrent_first_use_takes_effect_once(iw, base_url, name):
     """[§7] concurrent identical requests: exactly one 201, others 200 with the same body."""
     caller, path, body, _, _ = _case(iw, name)
     who = next(h for h, c in iw.clients.items() if c is caller)
-    clients = [iw.new_client(who) for _ in range(25)]
+    clients = [iw.new_client(who) for _ in range(50)]
     key = new_key()
     before_rqs = len(caller.requests_list())
-    out = m.burst(lambda i: clients[i].post(path, json=body, key=key), 25)
+    out = m.burst(lambda i: clients[i].post(path, json=body, key=key), 50)
     m.assert_no_5xx(out)
-    assert m.tally(out) == {200: 24, 201: 1}, m.tally(out)
+    assert m.tally(out) == {200: 49, 201: 1}, m.tally(out)
     bodies = [r.json() for r in out]
     assert all(b == bodies[0] for b in bodies)
     bal = iw.oracle()

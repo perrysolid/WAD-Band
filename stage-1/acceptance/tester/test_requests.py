@@ -347,12 +347,12 @@ def test_paid_request_lists_payment_id_for_both_parties(world):
 
 
 def test_concurrent_pays_of_one_request_move_money_once(world):
-    """[§1.3] adversarial: 20 different keys race to pay one request: exactly one 201."""
+    """[§1.3] adversarial: 50 different keys race to pay one request: exactly one 201."""
     r = _rq(world, amount=1000)
-    clients = [world.new_client("ada") for _ in range(20)]
-    out = m.burst(lambda i: clients[i].pay_request(r["request_id"]), 20)
+    clients = [world.new_client("ada") for _ in range(50)]
+    out = m.burst(lambda i: clients[i].pay_request(r["request_id"]), 50)
     m.assert_no_5xx(out)
-    assert m.tally(out) == {201: 1, 409: 19}, m.tally(out)
+    assert m.tally(out) == {201: 1, 409: 49}, m.tally(out)
     for x in out:
         if x.status_code == 409:
             expect_error(x, 409, "request_not_pending")
