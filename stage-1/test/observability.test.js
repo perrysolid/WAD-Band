@@ -141,3 +141,18 @@ test('W1-X the invariant guard refusal logs the request_id and changes nothing',
   assert.equal(await t.balance(w.ada), 10000);
   assert.equal(await t.balance(w.bob), 2500);
 });
+
+test('W1-F a client that disconnects mid-body yields exactly one log line, with a null status', async () => {
+  const before = out.length;
+  await new Promise((resolve) => {
+    const s = net.connect(new URL(t.base).port, '127.0.0.1');
+    s.on('error', () => {});
+    s.write('POST /payments HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\n{"to_hand');
+    setTimeout(() => { s.destroy(); setTimeout(resolve, 200); }, 100);
+  });
+  const lines = out.slice(before).map((l) => JSON.parse(l));
+  assert.equal(lines.length, 1, JSON.stringify(lines));
+  assert.equal(lines[0].method, 'POST');
+  assert.equal(lines[0].path, '/payments');
+  assert.equal(lines[0].status, null);
+});

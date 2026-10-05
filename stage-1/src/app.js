@@ -594,7 +594,7 @@ function createApp({ log = defaultLog } = {}) {
       request_id: res.requestId,
       method: ctx.req.method,
       path: ctx.path,
-      status: res.statusCode,
+      status: res.headersSent ? res.statusCode : null, // null: the client went away before any response
       duration_ms: Math.round(Number(process.hrtime.bigint() - started) / 1e4) / 100,
       user_id: ctx.user ? ctx.user.id : null,
       idempotency: ctx.idem,
@@ -645,8 +645,20 @@ function createApp({ log = defaultLog } = {}) {
 function createServer(opts = {}) {
   const log = opts.log || defaultLog;
   const app = createApp({ log });
-  const server = http.createServer({ maxHeaderSize: 1 << 20, keepAliveTimeout: 30000 }, (req, res) => { app.handle(req, res); });
+  const busy = new WeakSet(); // sockets with a request being handled
+  const server = http.createServer({ maxHeaderSize: 1 << 20, keepAliveTimeout: 30000 }, (req, res) => {
+    const { socket } = req;
+    busy.add(socket);
+    res.on('close', () => busy.delete(socket));
+    app.handle(req, res);
+  });
   server.on('clientError', (err, socket) => {
+    // A reset, or a parser error on a socket whose request is already being handled,
+    // is that request's ending: its own access line covers it (W1-X: one line per request).
+    if (err.code === 'ECONNRESET' || busy.has(socket)) {
+      socket.destroy();
+      return;
+    }
     if (socket.writable) {
       const requestId = newRequestId();
       const data = JSON.stringify({ error: { code: 'malformed_request', message: 'bad HTTP request' } });
