@@ -99,6 +99,9 @@ from stage 3 or 4.
 - **D36 UI stack**: no framework required. Vanilla ES modules + CSS served from the image, plus one vendored open-licence variable font (e.g. Inter woff2) in `stage-2/public/fonts/`, with a system fallback. No build-time network is needed for the UI.
 - **D37 Lost-response classes**: a fetch rejection (network/abort), no response within 8 s, or HTTP 5xx/408/429 → uncertain. Every other 4xx → refused. 2xx → success (201 and replay 200 are treated the same).
 
+- **D38 UI tolerance for upgrade**: the UI reads `/me` with fallbacks (total = total ?? balance, available = available ?? balance, held = held ?? 0). A missing authorization_id/settlement_id/payment_ids is treated as null/[]. A 404 from GET /authorizations shows the empty state. No code path throws on a missing optional field. The tester covers the upgrade two ways: by forwarding the browser's API calls to stage 1 until the import, and by a stage-2 A → stage-2 B import.
+- **PF_STAGE (tester)**: when the stage-1 suite runs with PF_STAGE>=2, it skips test_scope.py and checks the /me keys as a subset plus balance == total.
+
 ## Risk map (stage 2)
 
 1. Conservation and non-negativity with holds → S2-R1, R10, R11 (tester: 50-way authorize/capture/void/pay mixes with an oracle on Σtotal, available ≥ 0, Σcaptures ≤ amount).
