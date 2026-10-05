@@ -175,7 +175,7 @@ def test_import_with_clock_out_of_range_is_422_and_destination_unchanged(busy, c
     _assert_still_serving(w)
 
 
-@pytest.mark.parametrize("value", [9e15, TOP + 1, -1, 1.5, 253402300800000, 10 ** 30])
+@pytest.mark.parametrize("value", [9e15, TOP + 2, -1, 1.5, 253402300800000, 10 ** 30])
 def test_out_of_range_numbers_anywhere_in_state_never_break_the_service(busy, control, value):
     """[D40 §5] every numeric field of the state, set out of range: import answers 204 or
     422 (never 5xx); a 422 leaves the destination unchanged; either way the service keeps
@@ -211,7 +211,7 @@ def test_import_with_balance_above_two_pow_53_is_rejected(make_world, control):
     if not hits:
         pytest.skip("balance not stored as a plain number in this state format")
     for path in hits:
-        for value in (TOP + 1, TOP + 2, 10 ** 20):  # TOP + 1 must not be rounded to 2^53
+        for value in (TOP + 2, 2 ** 60, 10 ** 20):  # TOP + 1 parses to 2^53 itself: untestable
             bad = copy.deepcopy(snap)
             _set(bad["state"], path, value)
             resp = _import(control, bad)
@@ -228,3 +228,19 @@ def _get(doc, path):
     for p in path:
         doc = doc[p]
     return doc
+
+
+def test_import_with_balance_of_exactly_two_pow_53_is_accepted(make_world, control):
+    """[D40] the bound is inclusive: 2^53 itself imports (204) and is served exactly. This is
+    also what the literal 2^53+1 becomes after JSON parsing, so it cannot be refused."""
+    sentinel = 7_777_777_123
+    make_world(m.fixture([m.user("ada", sentinel), m.BOB, m.CY]))
+    snap = _export(control)
+    hits = [p for p in _numeric_leaves(snap["state"]) if _get(snap["state"], p) == sentinel]
+    if not hits:
+        pytest.skip("balance not stored as a plain number in this state format")
+    ok = copy.deepcopy(snap)
+    for path in hits[:1]:
+        _set(ok["state"], path, TOP)
+    expect(_import(control, ok), 204)
+    expect(_import(control, snap), 204)  # restore

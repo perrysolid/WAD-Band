@@ -108,3 +108,7 @@ numbers → test_s2_fixture ttl, capture literals, test_s2_bounds · 5 hashing �
 test_s2_export_import::test_export_contains_no_plaintext_password · 6 export/import →
 test_s2_export_import, test_s2_bounds D40, upgrade · 7 time → test_s2_time · 8 browser recovery →
 test_ui_recovery, test_ui_wallet_pay, upgrade browser tests.
+
+Note (D40-1, architect DECISION): integers above 2^53 are not distinguishable after JSON
+parsing (2^53+1 parses to 2^53, inside the bound). The D40 import tests probe 2^53+2 and
+larger, and assert that exactly 2^53 is accepted.

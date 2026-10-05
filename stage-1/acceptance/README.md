@@ -30,3 +30,7 @@ check here already accepts an optional fraction and compares instants, not strin
 |---|---|
 | D39 balance above 2^53 → 422, after insufficient_funds, no key claimed | test_payment_above_two_pow_53_is_422_and_changes_nothing (amounts 1, 2, 1e9), test_payment_reaching_exactly_two_pow_53_is_allowed, test_insufficient_funds_precedes_the_upper_bound, test_upper_bound_refusal_claims_no_key, test_request_pay_above_two_pow_53_is_422_and_request_stays_pending, test_settlement_credit_above_two_pow_53_is_422 (1, 2, 1e9), test_settlement_bound_is_on_the_net_result, test_settlement_insufficient_funds_precedes_the_upper_bound |
 | D40 import bounds → 422, destination unchanged, never 5xx after | test_import_with_clock_out_of_range_is_422_and_destination_unchanged, test_out_of_range_numbers_anywhere_in_state_never_break_the_service (9e15, 2^53+1, −1, 1.5, 253402300800000, 1e30 in every numeric state field), test_import_with_balance_above_two_pow_53_is_rejected |
+
+Note (D40-1, architect DECISION): integers above 2^53 are not distinguishable after JSON
+parsing, because 2^53+1 parses to the double 2^53, which is inside the bound. The import tests
+therefore probe 2^53+2 and larger, and assert that exactly 2^53 is accepted.
