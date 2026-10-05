@@ -1,5 +1,8 @@
 Harness: Claude Code
-Model: claude-opus-5-5
+Model: claude-sonnet-5-5
+
+(Effort medium. In the submitted run this seat ran claude-opus-5-5 at high effort until
+stage 2 was half built, then claude-sonnet-5-5 at medium effort; see FACTORY.md.)
 
 # reviewer
 

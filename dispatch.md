@@ -92,3 +92,16 @@ stage-N container and import it into the new build as part of its gate. After ea
 post the full committed revision in the room. When all four are done, or the band cannot go
 further, post `DELIVERED` with the per-stage commit, the runner result, the requirements still
 unmet, the rejections and what they changed, and the wall time each stage took.
+
+
+---
+
+## Second human input: re-dispatch (6 Oct 01:15 IST)
+
+Switching the seats' model restarted them and cleared their context, so the architect stopped
+after stage 2 and reported that it could see no further job. This preface was posted, followed by
+the unchanged dispatch text above:
+
+> Re-dispatch of the original job (unchanged text below). The seats were restarted after a usage-limit stall and lost the original dispatch, which named all four stages. This restores it; nothing else changes.
+>
+> Status: stage 1 (3761a81) and stage 2 (6ff2e31) are already accepted and delivered. Continue with stage 3, then stage 4, exactly as the job below says. Time budget: post DELIVERED for whatever is accepted by 08:00 IST (02:30 UTC) at the latest. A stage that is not reviewer-accepted and claiming its stage by then is reported as unmet, not shipped.
