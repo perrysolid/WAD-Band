@@ -2,6 +2,7 @@
 // body reuses the same Idempotency-Key, so re-pressing the button can never act twice.
 import { h, clear } from './dom.js';
 import { request, messageOf, Identity } from './api.js';
+import { toast } from './toast.js';
 
 const UNCERTAIN_TEXT = 'We did not get an answer, so we cannot tell whether it went through. Press the button again: the very same request is sent, and it can only take effect once.';
 
@@ -57,6 +58,7 @@ export function moneyForm(cfg) {
     if (inflight === 0) submit.removeAttribute('aria-busy');
     if (r.outcome === 'ok') {
       show('ok', cfg.success(r.body));
+      toast(cfg.success(r.body));
       if (cfg.onDone) cfg.onDone('ok', r);
     } else if (r.outcome === 'refused') {
       show('error', messageOf(r));

@@ -3,7 +3,8 @@ import { load, request } from '../lib/api.js';
 import { formatMoney, parseDecimal, cleanHandle } from '../lib/money.js';
 import { moneyForm } from '../lib/form.js';
 import { walletPanel } from '../lib/wallet.js';
-import { session, refreshMe, onMe, humanTime } from '../lib/session.js';
+import { session, refreshMe, onMe } from '../lib/session.js';
+import { avatar, privacyBadge, timeEl } from '../lib/ui.js';
 
 export const VISIBILITY = [['public', 'Public: anyone can see it in the feed'], ['private', 'Private: only you and the other person']];
 
@@ -45,17 +46,30 @@ export function holdForm({ onDone }) {
 
 // ---- activity feed ----
 
+// The sentence is told from the viewer's side; the parties line always names both handles.
+export function sentence(p, meId) {
+  const sent = p.from_user_id === meId; const got = p.to_user_id === meId;
+  const from = `@${p.from_handle}`; const to = `@${p.to_handle}`;
+  if (p.refund_of) return sent ? `You refunded ${to}` : got ? `${from} refunded you` : `${from} refunded ${to}`;
+  if (p.authorization_id) return sent ? `${to} collected a held payment from you` : got ? `You collected a held payment from ${from}` : `${to} collected a held payment from ${from}`;
+  if (p.request_id) return sent ? `You paid ${to}'s request` : got ? `${from} paid your request` : `${from} paid ${to}'s request`;
+  if (p.settlement_id) return sent ? `You settled with ${to}` : got ? `${from} settled with you` : `${from} settled with ${to}`;
+  return sent ? `You paid ${to}` : got ? `${from} paid you` : `${from} paid ${to}`;
+}
+
 function feedItem(p, me) {
   const id = p.payment_id;
-  return h('li', { class: 'item', testid: `activity-item-${id}`, 'data-visibility': p.visibility },
+  const sent = p.from_user_id === me.user_id;
+  const other = sent ? p.to_handle : p.from_handle;
+  return h('li', { class: `item ${sent ? 'item-sent' : p.to_user_id === me.user_id ? 'item-received' : ''}`, testid: `activity-item-${id}`, 'data-visibility': p.visibility },
     h('div', { class: 'item-top' },
-      h('p', { class: 'item-who', testid: `activity-parties-${id}` }, `@${p.from_handle} paid @${p.to_handle}`),
+      h('div', { class: 'item-id' }, avatar(other),
+        h('p', { class: 'item-who', testid: `activity-parties-${id}` }, sentence(p, me.user_id), h('span', { class: 'pair', text: ` @${p.from_handle} → @${p.to_handle}` }))),
       h('p', { class: 'item-amount', testid: `activity-amount-${id}`, text: formatMoney(p.amount, me.minor_units, me.currency) })),
     h('p', { class: 'item-note', testid: `activity-note-${id}`, text: p.note }),
     h('div', { class: 'item-meta' },
-      h('span', { class: `badge badge-${p.visibility}`, text: p.visibility === 'private' ? 'Private' : 'Public' }),
-      p.authorization_id && h('span', { text: 'Collected from a hold' }),
-      h('time', { datetime: p.created_at, text: humanTime(p.created_at) })));
+      privacyBadge(p.visibility),
+      timeEl(p.created_at)));
 }
 
 export function home() {
@@ -118,12 +132,22 @@ export function home() {
   });
   const hold = holdForm({ onDone: afterMoney });
 
+  // Narrow screens show one form at a time (pay first); every form stays in the DOM. Wide screens show all.
+  const tabBtns = [['pay', 'Pay'], ['request', 'Request'], ['authorize', 'Hold']].map(([k, label]) => h('button', {
+    type: 'button', role: 'tab', class: 'tab', id: `tab-${k}`, 'aria-selected': k === 'pay' ? 'true' : 'false', text: label,
+    onclick: () => {
+      tabs.parentElement.dataset.active = k;
+      tabBtns.forEach((b) => b.setAttribute('aria-selected', String(b === tabBtns.find((x) => x.id === `tab-${k}`))));
+    },
+  }));
+  const tabs = h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Choose an action' }, tabBtns);
+
   refreshActivity(); // the shell loads `me`
   const nodes = [
     h('div', { class: 'page-head' }, h('h1', { text: 'Home' }), h('p', { text: 'Your money, what is on hold, and what has happened lately.' })),
     wallet.el,
     h('div', { class: 'grid-2' },
-      h('div', { class: 'stack' }, pay.el, ask.el, hold.el),
+      h('div', { class: 'stack', 'data-active': 'pay' }, tabs, pay.el, ask.el, hold.el),
       h('section', { 'aria-labelledby': 'feed-title' }, h('div', { class: 'section-title' }, h('h2', { id: 'feed-title', text: 'Activity' })), feed)),
   ];
   return { title: 'Home', nodes };

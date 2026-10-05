@@ -4,6 +4,8 @@ import { formatMoney, formatPlain, parseDecimal } from '../lib/money.js';
 import { walletPanel } from '../lib/wallet.js';
 import { session, refreshMe, onMe, humanTime } from '../lib/session.js';
 import { holdForm } from './home.js';
+import { toast } from '../lib/toast.js';
+import { avatar } from '../lib/ui.js';
 
 const STATUS_LABEL = { open: 'Open', captured: 'Captured', voided: 'Voided', expired: 'Expired' };
 
@@ -29,14 +31,14 @@ export function authorizations() {
     const body = { amount: parsed.minor, ...(keepEl.checked ? { final: false } : {}) };
     const path = `/authorizations/${encodeURIComponent(a.authorization_id)}/capture`;
     const res = await request('POST', path, { body, key: identityFor(a.authorization_id).keyFor(path, body) });
-    if (res.outcome === 'ok') { say(null); drafts.delete(a.authorization_id); } else if (res.outcome === 'refused') say('error', messageOf(res));
+    if (res.outcome === 'ok') { say(null); toast('Captured.'); drafts.delete(a.authorization_id); } else if (res.outcome === 'refused') say('error', messageOf(res));
     else say('uncertain', 'We did not get an answer, so we cannot tell whether the capture happened. Press Capture again: the same request is sent and can only count once.');
     if (res.outcome !== 'uncertain') refreshAll();
   }
 
   async function voidIt(a) {
     const res = await request('POST', `/authorizations/${encodeURIComponent(a.authorization_id)}/void`, {});
-    if (res.outcome === 'ok') say(null);
+    if (res.outcome === 'ok') { say(null); toast('Hold voided.'); }
     else if (res.outcome === 'refused') say('error', messageOf(res));
     else say('uncertain', 'We did not get an answer. Voiding is safe to repeat: press Void again.');
     if (res.outcome !== 'uncertain') refreshAll();
@@ -71,7 +73,8 @@ export function authorizations() {
     }
     return h('li', { class: 'item', testid: `authorization-item-${id}`, 'data-status': a.status },
       h('div', { class: 'item-top' },
-        h('p', { class: 'item-who', text: outgoing ? `You hold for @${a.to_handle}` : `@${a.from_handle} holds for you` }),
+        h('div', { class: 'item-id' }, avatar(outgoing ? a.to_handle : a.from_handle),
+          h('p', { class: 'item-who', text: outgoing ? `You hold for @${a.to_handle}` : `@${a.from_handle} holds for you` })),
         h('p', { class: 'item-amount', testid: `authorization-amount-${id}`, text: money(a.amount) })),
       h('p', { class: 'item-note', testid: `authorization-note-${id}`, text: a.note }),
       h('div', { class: 'item-meta' },

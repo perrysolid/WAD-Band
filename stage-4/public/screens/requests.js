@@ -1,7 +1,9 @@
 import { h, clear } from '../lib/dom.js';
 import { load, request, messageOf, identityBook } from '../lib/api.js';
 import { formatMoney } from '../lib/money.js';
-import { session, onMe, humanTime } from '../lib/session.js';
+import { session, onMe } from '../lib/session.js';
+import { toast } from '../lib/toast.js';
+import { avatar, timeEl } from '../lib/ui.js';
 
 export function requests() {
   let rows = null;
@@ -27,7 +29,7 @@ export function requests() {
     const res = kind === 'pay'
       ? await request('POST', path, { body: {}, key: identityFor(r.request_id).keyFor(path, {}) })
       : await request('POST', path, {});
-    if (res.outcome === 'ok') say(null);
+    if (res.outcome === 'ok') { say(null); toast(kind === 'pay' ? 'Request paid.' : kind === 'decline' ? 'Request declined.' : 'Request cancelled.'); }
     else if (res.outcome === 'refused') say('error', messageOf(res));
     else say('uncertain', 'We did not get an answer, so we cannot tell whether it went through. Try again: paying is safe to repeat.');
     if (res.outcome !== 'uncertain') refresh();
@@ -39,10 +41,11 @@ export function requests() {
     const pending = r.status === 'pending';
     return h('li', { class: 'item', testid: `request-item-${id}`, 'data-status': r.status },
       h('div', { class: 'item-top' },
-        h('p', { class: 'item-who', text: isIncoming ? `@${r.requester_handle} asks you for` : `You asked @${r.payer_handle} for` }),
+        h('div', { class: 'item-id' }, avatar(isIncoming ? r.requester_handle : r.payer_handle),
+          h('p', { class: 'item-who', text: isIncoming ? `@${r.requester_handle} asks you for` : `You asked @${r.payer_handle} for` })),
         h('p', { class: 'item-amount', testid: `request-amount-${id}`, text: formatMoney(r.amount, me.minor_units, me.currency) })),
       h('p', { class: 'item-note', testid: `request-note-${id}`, text: r.note }),
-      h('div', { class: 'item-meta' }, h('span', { class: `badge badge-${r.status}`, text: r.status.charAt(0).toUpperCase() + r.status.slice(1) }), h('time', { datetime: r.created_at, text: humanTime(r.created_at) })),
+      h('div', { class: 'item-meta' }, h('span', { class: `badge badge-${r.status}`, text: r.status.charAt(0).toUpperCase() + r.status.slice(1) }), timeEl(r.created_at)),
       pending && isIncoming && h('div', { class: 'item-actions' },
         h('button', { type: 'button', class: 'btn btn-small', testid: `request-pay-${id}`, text: 'Pay', onclick: () => act('pay', r) }),
         h('button', { type: 'button', class: 'btn btn-quiet btn-small', testid: `request-decline-${id}`, text: 'Decline', onclick: () => act('decline', r) })),

@@ -2,6 +2,7 @@
 import { token } from './lib/api.js';
 import { frame } from './lib/layout.js';
 import { session, onMe, refreshMe } from './lib/session.js';
+import { mountToasts } from './lib/toast.js';
 import { login, signup } from './screens/auth.js';
 import { home } from './screens/home.js';
 import { requests } from './screens/requests.js';
@@ -12,6 +13,7 @@ const PUBLIC = { '/login': login, '/signup': signup };
 const PRIVATE = { '/': home, '/requests': requests, '/split': split, '/authorizations': authorizations };
 
 function boot() {
+  mountToasts();
   const root = document.getElementById('app');
   const route = location.pathname.replace(/\/+$/, '') || '/';
   if (PUBLIC[route]) {
