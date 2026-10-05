@@ -11,6 +11,7 @@ const {
   State, Invalid, InvariantError, validateFixture, stateFromFixture, stateFromExport, idemScope,
   codePoints, MAX_AMOUNT, MAX_TIME, VISIBILITIES, STATUSES, AUTH_STATUSES,
 } = require('./state');
+const { createStatic, acceptsHtml, CSP } = require('./static');
 const { hashPassword, verifyPassword, hashSeedPasswords, tokenDigest, newToken } = require('./hash');
 
 const MAX_BODY = 64 * 1024 * 1024; // D15
@@ -694,6 +695,31 @@ function createApp({ log = defaultLog } = {}) {
     return v;
   }
 
+  const ui = createStatic();
+  const SHELLS = new Set(['/', '/split', '/signup', '/login']);
+  const SHARED = new Set(['/requests', '/authorizations']); // HTML only when the client asks for it (D26)
+
+  function sendFile(res, file) {
+    res.writeHead(200, {
+      'Content-Type': file.type, 'Content-Length': file.body.length, 'Content-Security-Policy': CSP,
+      'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff', 'X-Request-Id': res.requestId,
+    });
+    res.end(file.body);
+  }
+
+  // GET UI pages and assets; returns true when it answered.
+  function serveUi(req, res, path) {
+    if (req.method !== 'GET') return false;
+    if (SHELLS.has(path) || (SHARED.has(path) && acceptsHtml(req.headers.accept))) { sendFile(res, ui.shell); return true; }
+    if (path.startsWith('/assets/')) {
+      const f = ui.asset(path);
+      if (!f) return false;
+      sendFile(res, f);
+      return true;
+    }
+    return false;
+  }
+
   function send(res, status, body) {
     if (res.headersSent) return;
     if (status === 204) {
@@ -738,6 +764,7 @@ function createApp({ log = defaultLog } = {}) {
       const path = url.pathname;
       ctx.path = path;
       ctx.query = url.searchParams;
+      if (serveUi(req, res, path)) { req.resume(); return; }
       const hit = match(req.method, path);
       if (!hit) {
         req.resume();
