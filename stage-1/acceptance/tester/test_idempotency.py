@@ -6,7 +6,7 @@ import json
 import pytest
 
 import pf_model as m
-from pf_client import Api, expect, expect_error, new_key
+from pf_client import expect, expect_error, new_key
 
 
 def _case(w, name):

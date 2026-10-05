@@ -7,7 +7,7 @@ import time
 import pytest
 
 import pf_model as m
-from pf_client import Api, expect, expect_error, new_key
+from pf_client import Api, expect, expect_error
 
 RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$")
 

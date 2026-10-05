@@ -208,8 +208,9 @@ def test_seeded_partially_captured_open_hold(make_world):
 def test_reset_replaces_holds(make_world, reset):
     w = make_world(m.fixture(authorizations=[m.hold("a_1", "ada", "bob", 2_000)]))
     expect(w.ada.authorize("bob", 5), 201)
-    reset(m.fixture())
-    assert w.ada.auths() == [] and w.ada.me()["held"] == 0
+    reset(m.fixture())          # reset invalidates tokens (stage-1 R3): sign in again
+    ada = w.new_client("ada")
+    assert ada.auths() == [] and ada.me()["held"] == 0
 
 
 def test_seeded_hold_with_unknown_fields_is_fine(make_world):

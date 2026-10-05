@@ -6,7 +6,7 @@ import threading
 import time
 
 import pf_model as m
-from pf_client import expect, new_key
+from pf_client import expect
 
 
 def _clients(w, handle, n):

@@ -1,10 +1,14 @@
 """§6 authentication and §4 derived handles."""
 from __future__ import annotations
 
+import os
+
 import pytest
 
 import pf_model as m
 from pf_client import Api, expect, expect_error, new_key
+
+PF_STAGE = int(os.environ.get("PF_STAGE", "1"))
 
 
 def test_signup_shape_and_new_wallet(world, api):
@@ -13,8 +17,12 @@ def test_signup_shape_and_new_wallet(world, api):
     assert set(body) >= {"user_id", "display_name", "token"}
     assert body["display_name"] == "Dee D" and body["token"]
     me = api(body["token"]).me()
-    assert me == {"user_id": body["user_id"], "display_name": "Dee D", "handle": "dee",
-                  "balance": 0, "currency": "EUR", "minor_units": 2}
+    stage1 = {"user_id": body["user_id"], "display_name": "Dee D", "handle": "dee",
+              "balance": 0, "currency": "EUR", "minor_units": 2}
+    if PF_STAGE >= 2:   # DECISION PF_STAGE: stage 2 adds total/available/held to /me
+        assert {k: me.get(k) for k in stage1} == stage1 and me["balance"] == me["total"] == 0
+    else:
+        assert me == stage1
 
 
 def test_login_shape(world, api):

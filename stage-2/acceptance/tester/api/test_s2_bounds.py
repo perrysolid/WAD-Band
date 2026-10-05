@@ -79,7 +79,9 @@ def test_capture_above_two_pow_53_is_422_and_the_hold_is_untouched(make_world, b
     assert st["payment_ids"] == [] and w.ada.feed() == []
     expect(w.ada.pay("cy", 5), 201)                  # room under the bound again
     p = expect(w.ada.capture(a["authorization_id"], body, key=key), 201).json()
-    assert p["authorization_id"] == a["authorization_id"] and w.ada.balance() == TOP
+    assert p["authorization_id"] == a["authorization_id"]
+    assert p["amount"] == body.get("amount", 5)
+    assert w.ada.balance() == TOP - 5 + p["amount"]   # ada paid 5 away, then captured
     w.oracle()
 
 

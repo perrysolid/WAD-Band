@@ -94,13 +94,30 @@ def test_garbage_burst_on_new_endpoints_never_5xx(rw):
     rw.oracle()
 
 
-@pytest.mark.parametrize("hdr", ["Bearer", "Bearer ", "Basic abc", "bearer  x", "x"])
+@pytest.mark.parametrize("hdr", ["Bearer", "Basic abc", "bearer  x", "x"])
 def test_bad_authorization_headers_on_new_endpoints(rw, hdr):
     for method, path in (("GET", "/authorizations"), ("POST", "/authorizations"),
                          ("POST", f"/authorizations/{rw.aid}/void")):
         resp = rw.ada.request(method, path, json={}, token=None, key=new_key(),
                               headers={"Authorization": hdr})
         expect_error(resp, 401, "unauthenticated")
+
+
+def test_empty_bearer_value_is_unauthenticated(rw, base_url):
+    """httpx refuses to send 'Bearer ' (trailing space), so this goes over a raw socket."""
+    import socket
+    from urllib.parse import urlsplit
+    u = urlsplit(base_url)
+    for line in ("GET /authorizations HTTP/1.1", "POST /authorizations HTTP/1.1"):
+        with socket.create_connection((u.hostname, u.port), timeout=5) as sk:
+            sk.sendall((f"{line}\r\nHost: {u.netloc}\r\nAuthorization: Bearer \r\n"
+                        "Idempotency-Key: k1\r\nContent-Type: application/json\r\n"
+                        "Content-Length: 2\r\nConnection: close\r\n\r\n{}").encode())
+            data = b""
+            while chunk := sk.recv(65536):
+                data += chunk
+        assert data.startswith(b"HTTP/1.1 401"), data[:200]
+        assert b'"unauthenticated"' in data
 
 
 def test_query_string_on_writes_is_ignored(rw):
