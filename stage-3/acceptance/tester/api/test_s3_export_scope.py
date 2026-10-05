@@ -12,6 +12,7 @@ from pf_client import Api, expect, expect_error, new_key
 from hist import at
 
 FAR = "2999-01-01T00:00:00+00:00"
+LATER_STAGE = int(os.environ.get("PF_STAGE", "3")) >= 4     # DECISION PF_STAGE: stage-4 build
 
 
 def _post(client, path, body):
@@ -85,9 +86,9 @@ def test_import_twice_does_not_duplicate_revisions(hw, cur):
 
 def test_stage3_state_is_what_import_accepts_unchanged(hw, cur):
     snap = _export(cur)
-    assert snap["state"].get("schema_version") == 3
+    assert snap["state"].get("schema_version") == (4 if LATER_STAGE else 3)
     _import(cur, snap)
-    snap["state"]["schema_version"] = 4
+    snap["state"]["schema_version"] = 99
     expect_error(_post(cur, "/_test/import", snap), 422, "validation_failed")
     assert hw.ada.balance() == 10_000
 
@@ -188,6 +189,7 @@ LATER = [("POST", "/payments/{pid}/refunds"), ("GET", "/payments/{pid}/refunds")
          ("GET", "/correction-batches/cb_1"), ("GET", "/history"), ("GET", "/refunds")]
 
 
+@pytest.mark.skipif(LATER_STAGE, reason="stage-3 overshoot guard; PF_STAGE>=4")
 @pytest.mark.parametrize("method,path", LATER, ids=[f"{a} {b}" for a, b in LATER])
 def test_stage4_endpoints_do_not_exist(op_world, method, path):
     pid = expect(op_world.ada.pay("bob", 5), 201).json()["payment_id"]
@@ -197,6 +199,7 @@ def test_stage4_endpoints_do_not_exist(op_world, method, path):
     assert op_world.ada.balance() == 9_995
 
 
+@pytest.mark.skipif(LATER_STAGE, reason="stage-3 overshoot guard; PF_STAGE>=4")
 def test_no_stage4_fields_anywhere(hw):
     later = {"refund_of", "refunds", "correction_batch_id", "batch_id", "incomplete_settlement"}
     p = expect(hw.ada.pay("bob", 5), 201).json()
