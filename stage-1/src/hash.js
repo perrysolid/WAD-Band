@@ -57,4 +57,9 @@ function newToken() {
   return crypto.randomBytes(32).toString('hex');
 }
 
-module.exports = { seedCost, hashPassword, verifyPassword, hashSeedPasswords, tokenDigest, newToken };
+// Every N this service ever writes: the seeded ladder (2^12 down to 2^4) and the API cost.
+const COST_LADDER = [];
+for (let N = SEED_MAX_N; N >= SEED_MIN_N; N >>= 1) COST_LADDER.push(N);
+COST_LADDER.push(API_COST.N);
+
+module.exports = { COST_LADDER, seedCost, hashPassword, verifyPassword, hashSeedPasswords, tokenDigest, newToken };

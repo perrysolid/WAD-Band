@@ -125,6 +125,11 @@ function createApp({ log = defaultLog } = {}) {
     return body[field];
   }
 
+  // D39: a credit that would take a wallet above 2^53 is refused before anything changes.
+  function creditFits(s, userId, credit) {
+    if (!s.fits(userId, credit)) invalid('the credit would take a wallet balance above 2^53');
+  }
+
   // ---- query parameters (§5, D20) ---------------------------------------------
 
   function intParam(q, name, dflt, min, max) {
@@ -198,23 +203,26 @@ function createApp({ log = defaultLog } = {}) {
       const to = s.byHandle.get(toHandle);
       if (!to) notFound('no user has that handle');
       if (caller.balance < amount) fail(409, 'insufficient_funds', 'balance is below amount');
-      s.applyTransfers([{ from: caller.id, to: to.id, amount }]);
+      creditFits(s, to.id, amount);
+      const t = s.now();
       const p = {
         payment_id: s.newId('p', s.paymentById), from_user_id: caller.id, to_user_id: to.id, amount, note, visibility,
-        request_id: null, settlement_id: null, created_at: s.now(), seq: s.nextSeq(),
+        request_id: null, settlement_id: null, created_at: t, seq: s.nextSeq(),
       };
+      const view = paymentView(s, p); // rendered before anything changes
+      s.applyTransfers([{ from: caller.id, to: to.id, amount }]);
       s.addPayment(p);
-      return paymentView(s, p);
+      return view;
     });
   }
 
+  // Builds a request record; the caller renders it and then adds it with s.addRequest.
   function newRequest(s, requester, payer, amount, note, t, splitId) {
     const r = {
       request_id: s.newId('rq', s.requestById), requester_id: requester.id, payer_id: payer.id, amount, note,
       status: 'pending', payment_id: null, created_at: t, seq: s.nextSeq(),
     };
     if (splitId) r.split_id = splitId;
-    s.addRequest(r);
     return r;
   }
 
@@ -228,7 +236,10 @@ function createApp({ log = defaultLog } = {}) {
       const note = noteOf(b);
       const payer = s.byHandle.get(payerHandle);
       if (!payer) notFound('no user has that handle');
-      return requestView(s, newRequest(s, caller, payer, amount, note, s.now()));
+      const r = newRequest(s, caller, payer, amount, note, s.now());
+      const view = requestView(s, r);
+      s.addRequest(r);
+      return view;
     });
   }
 
@@ -246,15 +257,18 @@ function createApp({ log = defaultLog } = {}) {
       if (r.payer_id !== caller.id) fail(403, 'forbidden', 'only the payer may pay');
       if (r.status !== 'pending') fail(409, 'request_not_pending', `request is ${r.status}`);
       if (caller.balance < r.amount) fail(409, 'insufficient_funds', 'balance is below amount');
-      s.applyTransfers([{ from: caller.id, to: r.requester_id, amount: r.amount }]);
+      creditFits(s, r.requester_id, r.amount);
+      const t = s.now();
       const p = {
         payment_id: s.newId('p', s.paymentById), from_user_id: caller.id, to_user_id: r.requester_id, amount: r.amount,
-        note: r.note, visibility, request_id: r.request_id, settlement_id: null, created_at: s.now(), seq: s.nextSeq(),
+        note: r.note, visibility, request_id: r.request_id, settlement_id: null, created_at: t, seq: s.nextSeq(),
       };
+      const view = paymentView(s, p);
+      s.applyTransfers([{ from: caller.id, to: r.requester_id, amount: r.amount }]);
       s.addPayment(p);
       r.status = 'paid';
       r.payment_id = p.payment_id;
-      return paymentView(s, p);
+      return view;
     });
   }
 
@@ -316,13 +330,15 @@ function createApp({ log = defaultLog } = {}) {
         if (u.id === caller.id) return;
         reqs.push(newRequest(s, caller, u, shares[i].amount, note, t, splitId));
       });
-      s.splits.set(splitId, {
-        split_id: splitId, creator_id: caller.id, amount, note, shares, request_ids: reqs.map((r) => r.request_id), created_at: t,
-      });
-      return {
+      const view = {
         split_id: splitId, amount, currency: s.currency, note,
         shares: shares.map((x) => ({ ...x })), requests: reqs.map((r) => requestView(s, r)), created_at: iso(t),
       };
+      for (const r of reqs) s.addRequest(r);
+      s.splits.set(splitId, {
+        split_id: splitId, creator_id: caller.id, amount, note, shares, request_ids: reqs.map((r) => r.request_id), created_at: t,
+      });
+      return view;
     });
   }
 
@@ -357,23 +373,22 @@ function createApp({ log = defaultLog } = {}) {
         net.set(e.to.id, (net.get(e.to.id) || 0) + e.amount);
       }
       for (const [id, d] of net) {
-        if (s.users.get(id).balance + d < 0) fail(409, 'insufficient_funds', 'settlement is not affordable');
+        if (d < 0 && !s.fits(id, d)) fail(409, 'insufficient_funds', 'settlement is not affordable');
       }
-      s.applyTransfers(entries.map((e) => ({ from: e.from.id, to: e.to.id, amount: e.amount })));
+      for (const [id, d] of net) if (d > 0) creditFits(s, id, d); // D39, after insufficient_funds
       const t = s.now();
       const settlementId = s.newId('st', s.settlements);
-      const payments = entries.map((e) => {
-        const p = {
-          payment_id: s.newId('p', s.paymentById), from_user_id: e.from.id, to_user_id: e.to.id, amount: e.amount,
-          note: e.note, visibility: e.visibility, request_id: null, settlement_id: settlementId, created_at: t, seq: s.nextSeq(),
-        };
-        s.addPayment(p);
-        return p;
-      });
+      const payments = entries.map((e) => ({
+        payment_id: s.newId('p', s.paymentById), from_user_id: e.from.id, to_user_id: e.to.id, amount: e.amount,
+        note: e.note, visibility: e.visibility, request_id: null, settlement_id: settlementId, created_at: t, seq: s.nextSeq(),
+      }));
+      const view = { settlement_id: settlementId, committed_at: iso(t), payments: payments.map((p) => paymentView(s, p)) };
+      s.applyTransfers(entries.map((e) => ({ from: e.from.id, to: e.to.id, amount: e.amount })));
+      for (const p of payments) s.addPayment(p);
       s.settlements.set(settlementId, {
         settlement_id: settlementId, operator_id: ctx.user.id, payment_ids: payments.map((p) => p.payment_id), committed_at: t,
       });
-      return { settlement_id: settlementId, committed_at: iso(t), payments: payments.map((p) => paymentView(s, p)) };
+      return view;
     });
   }
 

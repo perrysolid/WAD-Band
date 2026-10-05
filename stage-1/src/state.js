@@ -2,10 +2,14 @@
 // In-memory service state (D22). All mutation happens synchronously inside one
 // event-loop turn; this module never awaits.
 
+const { COST_LADDER } = require('./hash');
+
 const SCHEMA = 'pocketful-state';
 const SCHEMA_VERSION = 1;
 const MAX_BALANCE = 2 ** 53;
 const MAX_AMOUNT = 1000000000;
+const MAX_TIME = 253402300799999; // 9999-12-31T23:59:59.999Z, the widest D10 instant (D40)
+const MAX_COUNTER = 2 ** 50;        // counters stay exact integers with room to grow (D40)
 const HANDLE_RE = /^[a-z0-9_]{1,20}$/;
 const VISIBILITIES = new Set(['public', 'private']);
 const STATUSES = new Set(['pending', 'paid', 'declined', 'cancelled']);
@@ -37,6 +41,7 @@ class State {
 
   now() {
     const t = Math.max(Date.now(), this.clock);
+    if (t > MAX_TIME) throw new InvariantError('invariant: clock beyond 9999-12-31');
     this.clock = t;
     return t;
   }
@@ -72,14 +77,21 @@ class State {
     this.requestById.set(r.request_id, r);
   }
 
-  // Apply a set of transfers atomically. Defence in depth (D22): the deltas must
-  // net to zero and every touched balance must stay within [0, 2^53]; otherwise
-  // nothing is applied and an error is thrown.
+  // D39: would `balance + d` stay within [0, 2^53]? Exact: every operand is an
+  // integer of magnitude ≤ 2^53, so neither comparison rounds.
+  fits(userId, d) {
+    const b = this.users.get(userId).balance;
+    return d >= 0 ? b <= MAX_BALANCE - d : b >= -d;
+  }
+
+  // Apply a set of transfers atomically. Defence in depth (D22, D39): the deltas
+  // must net to zero and every touched balance must stay within [0, 2^53];
+  // otherwise nothing is applied and an error is thrown.
   applyTransfers(transfers) {
     const delta = new Map();
     let net = 0;
     for (const t of transfers) {
-      if (!Number.isSafeInteger(t.amount) || t.amount < 0) throw new InvariantError('invariant: bad amount');
+      if (!Number.isSafeInteger(t.amount) || t.amount < 0 || t.amount > MAX_AMOUNT) throw new InvariantError('invariant: bad amount');
       if (!this.users.has(t.from) || !this.users.has(t.to)) throw new InvariantError('invariant: unknown wallet');
       delta.set(t.from, (delta.get(t.from) || 0) - t.amount);
       delta.set(t.to, (delta.get(t.to) || 0) + t.amount);
@@ -87,11 +99,8 @@ class State {
     const after = new Map();
     for (const [id, d] of delta) {
       net += d;
-      const b = this.users.get(id).balance + d;
-      if (!(Number.isSafeInteger(b) || b === MAX_BALANCE) || b < 0 || b > MAX_BALANCE) {
-        throw new InvariantError('invariant: balance out of range');
-      }
-      after.set(id, b);
+      if (!this.fits(id, d)) throw new InvariantError('invariant: balance out of range');
+      after.set(id, this.users.get(id).balance + d);
     }
     if (net !== 0) throw new InvariantError('invariant: transfers do not net to zero');
     for (const [id, b] of after) this.users.get(id).balance = b;
@@ -219,9 +228,11 @@ function stateFromExport(st) {
   need(isInt(st.schema_version) && st.schema_version === SCHEMA_VERSION, 'schema_version');
   need(isStr(st.currency) && st.currency.length > 0, 'currency');
   need([0, 2, 3].includes(st.minor_units), 'minor_units');
-  need(isInt(st.clock) && st.clock >= 0, 'clock');
+  need(isInt(st.clock) && st.clock >= 0 && st.clock <= MAX_TIME, 'clock');
   need(isObj(st.counters), 'counters');
-  for (const k of ['u', 'p', 'rq', 'sp', 'st', 'seq']) need(isInt(st.counters[k]) && st.counters[k] >= 0, 'counter');
+  for (const k of ['u', 'p', 'rq', 'sp', 'st', 'seq']) {
+    need(isInt(st.counters[k]) && st.counters[k] >= 0 && st.counters[k] <= MAX_COUNTER, 'counter');
+  }
   for (const k of ['users', 'tokens', 'payments', 'requests', 'splits', 'settlements', 'operators', 'idempotency']) {
     need(Array.isArray(st[k]), k);
   }
@@ -239,9 +250,9 @@ function stateFromExport(st) {
     need(isInt(u.balance) && u.balance >= 0 && u.balance <= MAX_BALANCE, 'user balance');
     need(isSeq(u.seq), 'user seq');
     const c = u.cred;
-    need(isObj(c) && c.alg === 'scrypt' && isInt(c.N) && c.N >= 2 && (c.N & (c.N - 1)) === 0 && c.N <= (1 << 20)
-      && isInt(c.r) && c.r >= 1 && c.r <= 32 && isInt(c.p) && c.p >= 1 && c.p <= 16
-      && isStr(c.salt) && /^[0-9a-f]{2,128}$/.test(c.salt) && c.salt.length % 2 === 0
+    // D40: only the parameter sets this service writes (hash.js COST_LADDER).
+    need(isObj(c) && c.alg === 'scrypt' && COST_LADDER.includes(c.N) && c.r === 8 && c.p === 1
+      && isStr(c.salt) && /^[0-9a-f]{32}$/.test(c.salt)
       && isStr(c.hash) && /^[0-9a-f]{64}$/.test(c.hash), 'user cred');
     s.addUser({
       id: u.id, email: u.email, display_name: u.display_name, handle: u.handle, balance: u.balance,
@@ -309,8 +320,9 @@ function stateFromExport(st) {
     s.operators.add(o);
   }
   for (const r of st.idempotency) {
-    need(isObj(r) && s.users.has(r.user_id) && r.method === 'POST' && isStr(r.path) && isStr(r.key)
-      && r.key.length >= 1 && isStr(r.canon) && (r.status === 201) && isObj(r.body), 'idempotency');
+    need(isObj(r) && s.users.has(r.user_id) && r.method === 'POST' && isStr(r.path) && IDEM_PATH.test(r.path)
+      && isStr(r.key) && r.key.length >= 1 && codePoints(r.key) <= 255 && isStr(r.canon) && r.status === 201
+      && isObj(r.body), 'idempotency');
     const k = idemScope(r.user_id, r.method, r.path, r.key);
     need(!s.idem.has(k), 'idempotency duplicate');
     s.idem.set(k, { user_id: r.user_id, method: r.method, path: r.path, key: r.key, canon: r.canon, status: r.status, body: r.body });
@@ -318,11 +330,14 @@ function stateFromExport(st) {
   return s;
 }
 
+// The five idempotent write paths (§7).
+const IDEM_PATH = /^\/(payments|requests|splits|settlements|requests\/[^/]+\/pay)$/;
+
 function idemScope(userId, method, path, key) {
   return JSON.stringify([userId, method, path, key]);
 }
 
 module.exports = {
   State, Invalid, InvariantError, validateFixture, stateFromFixture, stateFromExport, idemScope,
-  codePoints, MAX_AMOUNT, HANDLE_RE, VISIBILITIES, STATUSES,
+  codePoints, MAX_AMOUNT, MAX_BALANCE, MAX_TIME, HANDLE_RE, VISIBILITIES, STATUSES,
 };
