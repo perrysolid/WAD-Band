@@ -15,6 +15,8 @@ import pathlib
 import sys
 from datetime import timedelta
 
+from urllib.parse import urlsplit
+
 import httpx
 import pytest
 
@@ -255,3 +257,41 @@ def world(make_world) -> World:
 def op_world(make_world) -> World:
     """As `world`, plus Dee (0); Ada is the only settlement operator."""
     return make_world(m.fixture([m.ADA, m.BOB, m.CY, m.user("dee", 0)], operators=["u_ada"]))
+
+
+# ---- browser (UI and upgrade suites) -------------------------------------------
+
+def _browser_args(url: str) -> list[str]:
+    """Treat the service origin as a secure context, as the grading harness does."""
+    parts = urlsplit(url)
+    return [f"--unsafely-treat-insecure-origin-as-secure={parts.scheme}://{parts.netloc}"]
+
+
+@pytest.fixture(scope="session")
+def browser(base_url):
+    from playwright import sync_api as playwright
+    with playwright.sync_playwright() as driver:
+        instance = driver.chromium.launch(channel="chromium", args=_browser_args(base_url))
+        yield instance
+        instance.close()
+
+
+@pytest.fixture
+def new_page(browser, base_url):
+    contexts = []
+
+    def _new(**kw):
+        context = browser.new_context(base_url=base_url, **kw)
+        context.set_default_timeout(10_000)
+        contexts.append(context)
+        return context.new_page()
+
+    yield _new
+    for c in contexts:
+        c.close()
+
+
+@pytest.fixture
+def page(new_page):
+    """A fresh browser context per test, so no session leaks between them."""
+    return new_page()
