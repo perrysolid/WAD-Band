@@ -351,8 +351,8 @@ def test_a_new_run_takes_a_new_snapshot(big, page):
     expect(ada.pay("cy", 5), 201)
     q = parse_qs(urlsplit(_statement(page).url).query)
     assert "snapshot" not in q, "a fresh run is a first request"
-    page.wait_for_selector(sel("history-entries"))
-    assert amount(page, "history-closing") == ada.me()["balance"]
+    pw_expect(page.locator(sel("history-closing"))).to_have_attribute(
+        "data-amount", str(ada.me()["balance"]))
 
 
 def test_a_lost_snapshot_says_so_in_plain_words(big, page):
