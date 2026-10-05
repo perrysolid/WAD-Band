@@ -71,3 +71,17 @@ a stage-1 export (schema version 1).
   funds vs available (409); then historical total/available at every boundary (409). All revisions share one recorded_at
   (strictly after every member's previous one) and carry `correction_batch_id` (`cb_<n>`). Everything is judged on a draft.
 - DECISION S4-D4 Export is schema_version 4 (adds `refund_of`, `counters.cb`, revision `correction_batch_id`); versions 1-4 import.
+
+## History screen (/history) — test ids
+
+Served as HTML only when the client sends `Accept: text/html`; otherwise `/history` is the JSON 404. Signed-out loads go to /login.
+
+- Balance as of: `history-asof-time` (datetime-local, browser time zone; sent as RFC 3339 with the offset in force), `history-asof-submit`,
+  `history-asof-loading`, `history-asof-balance`, `history-asof-available`, `history-asof-held` (each with `data-amount` in minor units),
+  `history-asof-echo` ("As of <exact string sent>"), `history-asof-error`.
+- Statement: `history-from`, `history-to` (datetime-local, both optional; the window is [from, to)), `history-statement-submit`, `history-loading`,
+  `history-opening`, `history-closing` (`data-amount`), `history-entries` (list), `history-entry-{payment_id}`, `history-entry-parties-{id}`,
+  `history-delta-{id}` (signed text, `data-amount` = delta), `history-balance-after-{id}` (`data-amount`), `history-prev`, `history-next`,
+  `history-page-info` ("Entries 21–25"), `history-empty`, `history-error`.
+- Paging: 20 entries per page. The first request is `GET /statement?limit=20&offset=0[&from=&to=]`; every later page is
+  `GET /statement?snapshot=<token>&limit=20&offset=<n>` with nothing else, so pages stay consistent. A 404 on a snapshot says the statement is no longer available.

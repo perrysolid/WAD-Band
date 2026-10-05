@@ -8,9 +8,10 @@ import { home } from './screens/home.js';
 import { requests } from './screens/requests.js';
 import { split } from './screens/split.js';
 import { authorizations } from './screens/authorizations.js';
+import { history } from './screens/history.js';
 
 const PUBLIC = { '/login': login, '/signup': signup };
-const PRIVATE = { '/': home, '/requests': requests, '/split': split, '/authorizations': authorizations };
+const PRIVATE = { '/': home, '/requests': requests, '/split': split, '/authorizations': authorizations, '/history': history };
 
 function boot() {
   mountToasts();

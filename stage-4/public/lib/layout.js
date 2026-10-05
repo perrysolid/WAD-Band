@@ -2,7 +2,7 @@
 import { h } from './dom.js';
 import { token } from './api.js';
 
-const NAV = [['/', 'Home'], ['/requests', 'Requests'], ['/split', 'Split'], ['/authorizations', 'Holds']];
+const NAV = [['/', 'Home'], ['/requests', 'Requests'], ['/split', 'Split'], ['/authorizations', 'Holds'], ['/history', 'History']];
 
 export function frame(route, main) {
   const who = h('div', { class: 'who' });

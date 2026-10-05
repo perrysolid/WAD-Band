@@ -935,7 +935,7 @@ function createApp({ log = defaultLog } = {}) {
 
   const ui = createStatic();
   const SHELLS = new Set(['/', '/split', '/signup', '/login']);
-  const SHARED = new Set(['/requests', '/authorizations']); // HTML only when the client asks for it (D26)
+  const SHARED = new Set(['/requests', '/authorizations', '/history']); // HTML only when the client asks for it (D26)
 
   function sendFile(res, file) {
     res.writeHead(200, {

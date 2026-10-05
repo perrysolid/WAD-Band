@@ -462,3 +462,12 @@ time[title] { cursor: help; text-decoration: underline dotted; text-underline-of
   main { padding-top: var(--s2); }
   input, select { min-height: 40px; }
 }
+
+/* ---- history ---- */
+.card-flat { background: var(--surface-2); }
+.statement-out { margin-top: var(--s4); display: grid; gap: var(--s4); }
+.statement-sum { padding-bottom: var(--s2); border-bottom: 1px solid var(--line); }
+.asof-out { margin-top: var(--s4); }
+.pager { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); flex-wrap: wrap; }
+.pager .btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+input[type="datetime-local"] { min-width: 0; }
