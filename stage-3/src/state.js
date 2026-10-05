@@ -5,7 +5,7 @@
 const { COST_LADDER } = require('./hash');
 
 const SCHEMA = 'pocketful-state';
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const MAX_TTL = 1e10;               // seconds; keeps expires_at inside the D40 time range
 const MAX_BALANCE = 2 ** 53;
 const MAX_AMOUNT = 1000000000;
@@ -43,6 +43,9 @@ class State {
     this.authorizations = [];    // creation order
     this.authById = new Map();
     this.openAuths = new Map();  // id -> auth whose stored status is 'open'
+    this.userPayments = new Map(); // user id -> payments they sent or received (creation order)
+    this.userAuths = new Map();    // payer user id -> their authorizations
+    this.snapshots = new Map();    // token -> frozen statement (S3); dies with the state at reset
   }
 
   now() {
@@ -68,14 +71,20 @@ class State {
   }
 
   addUser(u) {
+    if (u.opening === undefined) u.opening = 0;
     this.users.set(u.id, u);
     this.byHandle.set(u.handle, u);
     this.byEmail.set(u.email.toLowerCase(), u);
   }
 
   addPayment(p) {
+    if (!p.revisions) p.revisions = [{ revision: 1, amount: p.amount, effective_at: p.created_at, recorded_at: p.created_at, reason: '' }];
     this.payments.push(p);
     this.paymentById.set(p.payment_id, p);
+    for (const id of new Set([p.from_user_id, p.to_user_id])) {
+      if (!this.userPayments.has(id)) this.userPayments.set(id, []);
+      this.userPayments.get(id).push(p);
+    }
   }
 
   addRequest(r) {
@@ -86,6 +95,8 @@ class State {
   addAuthorization(a) {
     this.authorizations.push(a);
     this.authById.set(a.authorization_id, a);
+    if (!this.userAuths.has(a.from_user_id)) this.userAuths.set(a.from_user_id, []);
+    this.userAuths.get(a.from_user_id).push(a);
     if (a.status === 'open') this.openAuths.set(a.authorization_id, a);
   }
 
@@ -93,7 +104,23 @@ class State {
   // the start of each request's synchronous section; there is no background job.
   expire(now) {
     for (const [id, a] of this.openAuths) {
-      if (a.expires_at <= now) { a.status = 'expired'; this.openAuths.delete(id); }
+      if (a.expires_at <= now) {
+        a.status = 'expired'; this.openAuths.delete(id);
+        a.closed_at = a.expires_at;
+        a.events.push({ t: a.expires_at, d: -(a.amount - a.captured_amount), exp: true });
+      }
+    }
+  }
+
+  // Opening balance = current balance minus the net of every payment's ORIGINAL revision.
+  deriveOpenings() {
+    for (const u of this.users.values()) {
+      let net = 0;
+      for (const p of this.userPayments.get(u.id) || []) {
+        if (p.from_user_id === p.to_user_id) continue;
+        net += p.to_user_id === u.id ? p.amount : -p.amount;
+      }
+      u.opening = u.balance - net;
     }
   }
 
@@ -152,13 +179,13 @@ class State {
       counters: { ...this.counters },
       users: [...this.users.values()].map((u) => ({ ...u, cred: { ...u.cred } })),
       tokens: [...this.tokens.entries()].map(([digest, userId]) => ({ digest, user_id: userId })),
-      payments: this.payments.map((p) => ({ ...p })),
+      payments: this.payments.map((p) => ({ ...p, revisions: p.revisions.map((r) => ({ ...r })) })),
       requests: this.requests.map((r) => ({ ...r })),
       splits: [...this.splits.values()].map((s) => ({ ...s, shares: s.shares.map((x) => ({ ...x })), request_ids: [...s.request_ids] })),
       settlements: [...this.settlements.values()].map((s) => ({ ...s, payment_ids: [...s.payment_ids] })),
       operators: [...this.operators],
       authorization_ttl_seconds: this.ttl,
-      authorizations: this.authorizations.map((a) => ({ ...a, payment_ids: [...a.payment_ids] })),
+      authorizations: this.authorizations.map((a) => ({ ...a, payment_ids: [...a.payment_ids], events: a.events.map((e) => ({ ...e })) })),
       idempotency: [...this.idem.values()].map((r) => ({ ...r })),
     };
   }
@@ -227,6 +254,7 @@ function validateFixture(fx) {
     need(isAmount(p.amount), 'payment amount');
     need(p.note === undefined || isNote(p.note), 'payment note');
     need(p.visibility === undefined || VISIBILITIES.has(p.visibility), 'payment visibility');
+    need(p.created_at === undefined || (parseInstant(p.created_at) !== null && parseInstant(p.created_at) <= Date.now()), 'payment created_at');
     pids.add(p.id);
   }
   const rids = new Set();
@@ -259,6 +287,7 @@ function validateFixture(fx) {
     need(isStr(a.status) && AUTH_STATUSES.has(a.status), 'authorization status');
     const exp = parseInstant(a.expires_at);
     need(exp !== null, 'authorization expires_at');
+    need(a.created_at === undefined || (parseInstant(a.created_at) !== null && parseInstant(a.created_at) <= Date.now()), 'authorization created_at');
     need(a.captured_amount === undefined || (isInt(a.captured_amount) && a.captured_amount >= 0 && a.captured_amount <= a.amount), 'authorization captured_amount');
     need(a.payment_id === undefined || a.payment_id === null || pids.has(a.payment_id), 'authorization payment_id');
     const cap = a.captured_amount === undefined ? (a.status === 'captured' ? a.amount : 0) : a.captured_amount;
@@ -268,6 +297,17 @@ function validateFixture(fx) {
   }
   for (const [id, r] of reserved) need(r <= balance.get(id), 'holds exceed balance');
   return fx.users.map((u) => u.password);
+}
+
+// Hold history for a hold that did not live through this process (seed or old import).
+// Seeded closed holds need not reconstruct their lifecycle (S3 historical holds).
+function seedTimeline(wasOpen, status, created, exp, rem) {
+  if (status === 'open') return { events: [{ t: created, d: rem }], closed_at: null };
+  if (wasOpen && status === 'expired') {
+    const at = Math.max(exp, created);
+    return { events: [{ t: created, d: rem }, { t: at, d: -rem, exp: true }], closed_at: at };
+  }
+  return { events: [], closed_at: status === 'expired' ? exp : created };
 }
 
 // Build a State from a validated fixture and a Map password -> credential.
@@ -280,14 +320,17 @@ function stateFromFixture(fx, creds) {
       balance: u.balance, cred: creds.get(u.password), seq: s.nextSeq(),
     });
   }
-  for (const p of fx.payments || []) {
+  const seeded = (fx.payments || []).map((p, i) => ({ p, i, at: p.created_at === undefined ? t : parseInstant(p.created_at) }));
+  seeded.sort((x, y) => x.at - y.at || x.i - y.i);
+  for (const { p, at } of seeded) {
     s.addPayment({
       payment_id: p.id, from_user_id: p.from_user_id, to_user_id: p.to_user_id,
       amount: p.amount, note: p.note === undefined ? '' : p.note,
       visibility: p.visibility === undefined ? 'public' : p.visibility,
-      request_id: null, settlement_id: null, authorization_id: null, created_at: t, seq: s.nextSeq(),
+      request_id: null, settlement_id: null, authorization_id: null, created_at: at, seq: s.nextSeq(),
     });
   }
+  s.deriveOpenings();
   for (const r of fx.requests || []) {
     s.addRequest({
       request_id: r.id, requester_id: r.requester_id, payer_id: r.payer_id,
@@ -302,11 +345,14 @@ function stateFromFixture(fx, creds) {
   for (const a of fx.authorizations || []) {
     const exp = parseInstant(a.expires_at);
     const cap = a.captured_amount === undefined ? (a.status === 'captured' ? a.amount : 0) : a.captured_amount;
+    const created = a.created_at === undefined ? t : parseInstant(a.created_at);
+    const status = a.status === 'open' && exp <= t ? 'expired' : a.status;
     s.addAuthorization({
       authorization_id: a.id, from_user_id: a.from_user_id, to_user_id: a.to_user_id, amount: a.amount, captured_amount: cap,
       note: a.note === undefined ? '' : a.note, visibility: a.visibility === undefined ? 'public' : a.visibility,
-      status: a.status === 'open' && exp <= t ? 'expired' : a.status, expires_at: exp,
-      payment_ids: a.payment_id ? [a.payment_id] : [], created_at: t, seq: s.nextSeq(),
+      status, expires_at: exp,
+      payment_ids: a.payment_id ? [a.payment_id] : [], created_at: created, seq: s.nextSeq(),
+      ...seedTimeline(a.status === 'open', status, created, exp, a.amount - cap),
     });
   }
   return s;
@@ -318,8 +364,9 @@ function stateFromFixture(fx, creds) {
 function stateFromExport(st) {
   need(isObj(st), 'state');
   need(st.schema === SCHEMA, 'schema');
-  need(isInt(st.schema_version) && (st.schema_version === 1 || st.schema_version === SCHEMA_VERSION), 'schema_version');
-  const v2 = st.schema_version === 2; // D34: version 1 is upgraded (no authorizations, ttl 600)
+  need(isInt(st.schema_version) && (st.schema_version >= 1 && st.schema_version <= SCHEMA_VERSION), 'schema_version');
+  const v2 = st.schema_version >= 2; // D34: version 1 is upgraded (no authorizations, ttl 600)
+  const v3 = st.schema_version === 3; // S3: revisions, openings, hold histories
   need(isStr(st.currency) && st.currency.length > 0, 'currency');
   need([0, 2, 3].includes(st.minor_units), 'minor_units');
   need(isInt(st.clock) && st.clock >= 0 && st.clock <= MAX_TIME, 'clock');
@@ -348,6 +395,7 @@ function stateFromExport(st) {
     need(isStr(u.handle) && HANDLE_RE.test(u.handle) && !s.byHandle.has(u.handle), 'user handle');
     need(isInt(u.balance) && u.balance >= 0 && u.balance <= MAX_BALANCE, 'user balance');
     need(isSeq(u.seq), 'user seq');
+    need(!v3 || (isInt(u.opening) && Math.abs(u.opening) <= MAX_BALANCE), 'user opening');
     const c = u.cred;
     // D40: only the parameter sets this service writes (hash.js COST_LADDER).
     need(isObj(c) && c.alg === 'scrypt' && COST_LADDER.includes(c.N) && c.r === 8 && c.p === 1
@@ -356,6 +404,7 @@ function stateFromExport(st) {
     s.addUser({
       id: u.id, email: u.email, display_name: u.display_name, handle: u.handle, balance: u.balance,
       cred: { alg: 'scrypt', N: c.N, r: c.r, p: c.p, salt: c.salt, hash: c.hash }, seq: u.seq,
+      opening: v3 ? u.opening : 0,
     });
   }
   for (const t of st.tokens) {
@@ -372,10 +421,24 @@ function stateFromExport(st) {
     need(p.settlement_id === null || isId(p.settlement_id), 'payment settlement');
     need(!v2 || p.authorization_id === null || isId(p.authorization_id), 'payment authorization');
     need(isTime(p.created_at) && isSeq(p.seq), 'payment time');
+    let revisions;
+    if (v3) {
+      need(Array.isArray(p.revisions) && p.revisions.length >= 1, 'payment revisions');
+      let prev = null;
+      revisions = p.revisions.map((r, i) => {
+        need(isObj(r) && r.revision === i + 1 && isInt(r.amount) && r.amount >= 0 && r.amount <= MAX_AMOUNT
+          && isInt(r.effective_at) && r.effective_at >= 0 && r.effective_at <= MAX_TIME
+          && isInt(r.recorded_at) && r.recorded_at >= 0 && r.recorded_at <= MAX_TIME && isStr(r.reason)
+          && (prev === null || r.recorded_at > prev), 'payment revision');
+        prev = r.recorded_at;
+        return { revision: r.revision, amount: r.amount, effective_at: r.effective_at, recorded_at: r.recorded_at, reason: r.reason };
+      });
+      s.clock = Math.max(s.clock, prev);
+    }
     s.addPayment({
       payment_id: p.payment_id, from_user_id: p.from_user_id, to_user_id: p.to_user_id, amount: p.amount,
       note: p.note, visibility: p.visibility, request_id: p.request_id, settlement_id: p.settlement_id,
-      authorization_id: v2 ? p.authorization_id : null, created_at: p.created_at, seq: p.seq,
+      authorization_id: v2 ? p.authorization_id : null, created_at: p.created_at, seq: p.seq, revisions,
     });
   }
   for (const r of st.requests) {
@@ -393,6 +456,7 @@ function stateFromExport(st) {
     if (r.split_id) rec.split_id = r.split_id;
     s.addRequest(rec);
   }
+  if (!v3) s.deriveOpenings();
   for (const p of s.payments) need(p.request_id === null || s.requestById.has(p.request_id), 'payment request ref');
   for (const sp of st.splits) {
     need(isObj(sp) && isId(sp.split_id) && !s.splits.has(sp.split_id) && s.users.has(sp.creator_id), 'split');
@@ -424,10 +488,23 @@ function stateFromExport(st) {
     need(isInt(a.expires_at) && a.expires_at >= 0 && a.expires_at <= MAX_TIME && isTime(a.created_at) && isSeq(a.seq), 'authorization time');
     need(Array.isArray(a.payment_ids) && a.payment_ids.every((id) => s.paymentById.has(id)), 'authorization payments');
     need(a.status !== 'open' || a.captured_amount < a.amount, 'authorization remainder');
+    let tl;
+    if (v3) {
+      need(Array.isArray(a.events) && (a.closed_at === null || (isInt(a.closed_at) && a.closed_at >= 0 && a.closed_at <= MAX_TIME)), 'authorization history');
+      tl = {
+        events: a.events.map((e) => {
+          need(isObj(e) && isInt(e.t) && e.t >= 0 && e.t <= MAX_TIME && isInt(e.d) && Math.abs(e.d) <= MAX_BALANCE, 'authorization event');
+          return e.exp ? { t: e.t, d: e.d, exp: true } : { t: e.t, d: e.d };
+        }),
+        closed_at: a.closed_at,
+      };
+    } else {
+      tl = seedTimeline(a.status === 'open' || a.status === 'expired', a.status, a.created_at, a.expires_at, a.amount - a.captured_amount);
+    }
     s.addAuthorization({
       authorization_id: a.authorization_id, from_user_id: a.from_user_id, to_user_id: a.to_user_id, amount: a.amount,
       captured_amount: a.captured_amount, note: a.note, visibility: a.visibility, status: a.status, expires_at: a.expires_at,
-      payment_ids: [...a.payment_ids], created_at: a.created_at, seq: a.seq,
+      payment_ids: [...a.payment_ids], created_at: a.created_at, seq: a.seq, ...tl,
     });
     if (a.status === 'open' && a.expires_at > s.clock) reserved.set(a.from_user_id, (reserved.get(a.from_user_id) || 0) + a.amount - a.captured_amount);
   }
@@ -459,7 +536,7 @@ function boundedBody(v, depth) {
 }
 
 // The seven idempotent write paths (§7).
-const IDEM_PATH = /^\/(payments|requests|splits|settlements|authorizations|requests\/[^/]+\/pay|authorizations\/[^/]+\/capture)$/;
+const IDEM_PATH = /^\/(payments|requests|splits|settlements|authorizations|requests\/[^/]+\/pay|authorizations\/[^/]+\/capture|payments\/[^/]+\/corrections)$/;
 
 function idemScope(userId, method, path, key) {
   return JSON.stringify([userId, method, path, key]);

@@ -5,12 +5,13 @@
 // current state after awaiting.
 
 const http = require('node:http');
-const { randomUUID } = require('node:crypto');
+const { randomUUID, randomBytes } = require('node:crypto');
 const { parse, canonical, exactInteger, isObject, JNum } = require('./json');
 const {
   State, Invalid, InvariantError, validateFixture, stateFromFixture, stateFromExport, idemScope,
-  codePoints, MAX_AMOUNT, MAX_TIME, VISIBILITIES, STATUSES, AUTH_STATUSES,
+  codePoints, parseInstant, MAX_AMOUNT, MAX_TIME, VISIBILITIES, STATUSES, AUTH_STATUSES,
 } = require('./state');
+const H = require('./history');
 const { createStatic, acceptsHtml, CSP } = require('./static');
 const { hashPassword, verifyPassword, hashSeedPasswords, tokenDigest, newToken } = require('./hash');
 
@@ -98,6 +99,7 @@ function createApp({ log = defaultLog } = {}) {
       payment_id: a.payment_ids.length ? a.payment_ids[a.payment_ids.length - 1] : null,
       payment_ids: [...a.payment_ids],
       created_at: iso(a.created_at),
+      closed_at: a.closed_at === null ? null : iso(a.closed_at),
     };
   }
 
@@ -209,8 +211,28 @@ function createApp({ log = defaultLog } = {}) {
 
   // ---- handlers -----------------------------------------------------------------
 
+  function instantParam(q, name) {
+    const raw = q.get(name);
+    if (raw === null) return null;
+    const v = parseInstant(raw);
+    if (v === null) invalid(`${name} must be an RFC 3339 instant with an offset`);
+    return v;
+  }
+
   function me(ctx) {
-    const s = state; const u = ctx.user;
+    const s = state; const u = ctx.user; const q = ctx.query;
+    const asOf = instantParam(q, 'as_of'); const knownAt = instantParam(q, 'known_at');
+    if (asOf !== null || knownAt !== null) {
+      const total = H.totalAt(s, u.id, asOf === null ? H.INF : asOf, knownAt === null ? H.INF : knownAt);
+      const held = H.heldAt(s, u.id, asOf === null ? s.now() : asOf, knownAt === null ? H.INF : knownAt);
+      const body = {
+        user_id: u.id, display_name: u.display_name, handle: u.handle, balance: total, total,
+        available: total - held, held, currency: s.currency, minor_units: s.minor_units,
+      };
+      if (asOf !== null) body.as_of = q.get('as_of');
+      if (knownAt !== null) body.known_at = q.get('known_at');
+      return { status: 200, body };
+    }
     return {
       status: 200,
       body: {
@@ -439,6 +461,7 @@ function createApp({ log = defaultLog } = {}) {
       const a = {
         authorization_id: s.newId('au', s.authById), from_user_id: caller.id, to_user_id: to.id, amount, captured_amount: 0,
         note, visibility, status: 'open', expires_at: Math.min(t + s.ttl * 1000, MAX_TIME), payment_ids: [], created_at: t, seq: s.nextSeq(),
+        events: [{ t, d: amount }], closed_at: null,
       };
       const view = authView(s, a);
       // defence in depth: re-check just before the write
@@ -478,9 +501,10 @@ function createApp({ log = defaultLog } = {}) {
       // record the capture; nothing below can throw.
       s.applyTransfers([{ from: a.from_user_id, to: caller.id, amount }], new Map([[a.from_user_id, amount]]));
       s.addPayment(p);
+      a.events.push({ t, d: closes ? -remaining : -amount }); // a closing capture releases the remainder in the same step
       a.captured_amount += amount;
       a.payment_ids.push(p.payment_id);
-      if (closes) { a.status = 'captured'; s.openAuths.delete(a.authorization_id); }
+      if (closes) { a.status = 'captured'; a.closed_at = t; s.openAuths.delete(a.authorization_id); }
       return paymentView(s, p);
     });
   }
@@ -489,7 +513,11 @@ function createApp({ log = defaultLog } = {}) {
     const s = state;
     const a = findAuth(s, ctx.params.id);
     if (a.from_user_id !== ctx.user.id) fail(403, 'forbidden', 'only the payer may void');
-    if (a.status === 'open') { a.status = 'voided'; s.openAuths.delete(a.authorization_id); }
+    if (a.status === 'open') {
+      const t = s.now();
+      a.events.push({ t, d: -(a.amount - a.captured_amount) });
+      a.status = 'voided'; a.closed_at = t; s.openAuths.delete(a.authorization_id);
+    }
     else if (a.status !== 'voided') fail(409, 'authorization_not_open', `authorization is ${a.status}`);
     return { status: 200, body: authView(s, a) };
   }
@@ -509,6 +537,109 @@ function createApp({ log = defaultLog } = {}) {
     };
     const res = pageNewestFirst(s.authorizations, pred, pg);
     return { status: 200, body: { authorizations: res.items.map((a) => authView(s, a)), has_more: res.has_more } };
+  }
+
+  // ---- statements (S3) -----------------------------------------------------------------
+
+  const SNAPSHOT_CAP = 20000;
+
+  function statementPage(res, pg, token) {
+    const slice = res.entries.slice(pg.offset, pg.offset + pg.limit);
+    return {
+      opening_balance: res.opening,
+      entries: slice,
+      closing_balance: res.closing,
+      has_more: pg.offset + pg.limit < res.entries.length,
+      snapshot: token,
+    };
+  }
+
+  function statement(ctx) {
+    const s = state; const q = ctx.query; const uid = ctx.user.id;
+    const pg = page(q);
+    const token = q.get('snapshot');
+    if (token !== null) {
+      for (const f of ['from', 'to', 'known_at']) if (q.has(f)) invalid(`${f} cannot accompany a snapshot`);
+      const snap = s.snapshots.get(token);
+      if (!snap || snap.user_id !== uid) notFound('no such snapshot');
+      return { status: 200, body: statementPage(snap.result, pg, token) };
+    }
+    const from = instantParam(q, 'from'); const to = instantParam(q, 'to'); const knownAt = instantParam(q, 'known_at');
+    const r = H.statement(s, uid, from === null ? -H.INF : from, to === null ? H.INF : to, knownAt === null ? H.INF : knownAt);
+    const entries = r.entries.map(({ m, balance_after }) => ({
+      payment: { ...paymentView(s, m.p), amount: m.rev.amount },
+      delta: m.delta,
+      balance_after,
+      revision: m.rev.revision,
+      effective_at: iso(m.rev.effective_at),
+      recorded_at: iso(m.rev.recorded_at),
+    }));
+    const result = { opening: r.opening, closing: r.closing, entries };
+    const tok = `snap_${randomBytes(16).toString('hex')}`;
+    if (s.snapshots.size >= SNAPSHOT_CAP) s.snapshots.delete(s.snapshots.keys().next().value);
+    s.snapshots.set(tok, { user_id: uid, result });
+    return { status: 200, body: statementPage(result, pg, tok) };
+  }
+
+  // ---- corrections (S3) ------------------------------------------------------------------
+
+  function revisionView(p, r) {
+    return { payment_id: p.payment_id, revision: r.revision, amount: r.amount, effective_at: iso(r.effective_at), recorded_at: iso(r.recorded_at), reason: r.reason };
+  }
+
+  function correctPayment(ctx) {
+    return idempotent(ctx, (s) => {
+      const b = ctx.body; const caller = ctx.user;
+      stringType(b, 'effective_at'); stringType(b, 'reason');
+      if (!Object.hasOwn(b, 'expected_revision')) invalid('expected_revision is required');
+      const expected = exactInteger(b.expected_revision, 2 ** 53);
+      if (expected === null || expected < 1) invalid('expected_revision must be a positive integer');
+      if (!Object.hasOwn(b, 'amount')) invalid('amount is required');
+      const amount = exactInteger(b.amount, MAX_AMOUNT);
+      if (amount === null || amount < 0) invalid('amount must be an integer from 0 to 1000000000');
+      const eff = parseInstant(requireString(b, 'effective_at'));
+      if (eff === null) invalid('effective_at must be an RFC 3339 instant with an offset');
+      const now = s.now();
+      if (eff > now) invalid('effective_at is in the future');
+      const reason = requireString(b, 'reason');
+      const rl = codePoints(reason);
+      if (rl < 1 || rl > 200) invalid('reason must be 1 to 200 characters');
+      const p = s.paymentById.get(ctx.params.id);
+      if (!p) notFound('no such payment');
+      if (p.from_user_id !== caller.id) fail(403, 'forbidden', 'only the sender may correct a payment');
+      if (p.settlement_id !== null || p.authorization_id !== null) fail(422, 'linked_payment_immutable', 'settlement members and captures cannot be corrected');
+      const cur = p.revisions[p.revisions.length - 1];
+      if (expected !== cur.revision) fail(409, 'stale_revision', `current revision is ${cur.revision}`);
+      const delta = amount - cur.amount;
+      const payer = p.from_user_id; const payee = p.to_user_id;
+      const debit = delta > 0 ? payer : payee;
+      const credit = delta > 0 ? payee : payer;
+      const mag = Math.abs(delta);
+      if (mag > 0) {
+        if (s.available(debit) < mag) fail(409, 'insufficient_funds', 'the debit is not affordable');
+        creditFits(s, credit, mag);
+      }
+      const rev = {
+        revision: cur.revision + 1, amount, effective_at: eff, recorded_at: Math.max(now, cur.recorded_at + 1), reason,
+      };
+      if (rev.recorded_at > MAX_TIME) throw new InvariantError('invariant: clock beyond 9999-12-31');
+      // Judge the draft: the revision is appended only for the check and removed again before any other
+      // request can run (this section is synchronous).
+      p.revisions.push(rev);
+      let bad;
+      try { bad = H.overdrawn(s, payer, now) || H.overdrawn(s, payee, now); } finally { p.revisions.pop(); }
+      if (bad) fail(409, 'historical_overdraft', 'the correction would overdraw a wallet at a past instant');
+      if (mag > 0) s.applyTransfers([{ from: debit, to: credit, amount: mag }]);
+      p.revisions.push(rev);
+      s.clock = Math.max(s.clock, rev.recorded_at);
+      return revisionView(p, rev);
+    });
+  }
+
+  function listRevisions(ctx) {
+    const s = state; const p = s.paymentById.get(ctx.params.id);
+    if (!p || (p.from_user_id !== ctx.user.id && p.to_user_id !== ctx.user.id)) notFound('no such payment');
+    return { status: 200, body: { revisions: p.revisions.map((r) => revisionView(p, r)) } };
   }
 
   // ---- auth -----------------------------------------------------------------------
@@ -643,6 +774,9 @@ function createApp({ log = defaultLog } = {}) {
     { method: 'GET', path: '/authorizations', auth: true, fn: listAuthorizations },
     { method: 'POST', path: /^\/authorizations\/([^/]+)\/capture$/, body: 'api', auth: true, fn: captureAuthorization },
     { method: 'POST', path: /^\/authorizations\/([^/]+)\/void$/, auth: true, fn: voidAuthorization },
+    { method: 'GET', path: '/statement', auth: true, fn: statement },
+    { method: 'POST', path: /^\/payments\/([^/]+)\/corrections$/, body: 'api', auth: true, fn: correctPayment },
+    { method: 'GET', path: /^\/payments\/([^/]+)\/revisions$/, auth: true, fn: listRevisions },
     { method: 'POST', path: '/settlements', body: 'api', auth: true, operator: true, fn: createSettlement },
   ];
 

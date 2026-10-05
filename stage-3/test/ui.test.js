@@ -52,7 +52,7 @@ test('assets are served with real content types; unknown routes and traversal ar
   }
   const font = await get('/assets/fonts/inter-latin-wght.woff2');
   assert.equal(font.headers.get('content-type'), 'font/woff2');
-  for (const p of ['/nope', '/assets/missing.js', '/assets/../src/app.js', '/assets/%2e%2e/src/app.js', '/assets/', '/me/html', '/statement', '/history']) {
+  for (const p of ['/nope', '/assets/missing.js', '/assets/../src/app.js', '/assets/%2e%2e/src/app.js', '/assets/', '/me/html', '/history']) {
     const r = await get(p, HTML);
     assert.equal(r.status, 404, p);
     assert.match(r.headers.get('content-type'), /^application\/json/);
