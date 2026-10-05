@@ -9,12 +9,12 @@ const { randomUUID } = require('node:crypto');
 const { parse, canonical, exactInteger, isObject, JNum } = require('./json');
 const {
   State, Invalid, InvariantError, validateFixture, stateFromFixture, stateFromExport, idemScope,
-  codePoints, MAX_AMOUNT, VISIBILITIES, STATUSES,
+  codePoints, MAX_AMOUNT, MAX_TIME, VISIBILITIES, STATUSES, AUTH_STATUSES,
 } = require('./state');
 const { hashPassword, verifyPassword, hashSeedPasswords, tokenDigest, newToken } = require('./hash');
 
 const MAX_BODY = 64 * 1024 * 1024; // D15
-const FORMAT_VERSION = 1;
+const FORMAT_VERSION = 1; // the envelope; state.schema_version is 2 (D34)
 const TRACK = 'pocketful';
 
 class HttpError extends Error {
@@ -29,8 +29,10 @@ const malformed = (m) => fail(400, 'malformed_request', m || 'malformed request'
 const invalid = (m) => fail(422, 'validation_failed', m || 'validation failed');
 const notFound = (m) => fail(404, 'not_found', m || 'not found');
 
+// D35: UTC +00:00; fractional seconds only when the millisecond part is non-zero.
 function iso(ms) {
-  return new Date(ms).toISOString().replace('Z', '+00:00');
+  const t = new Date(ms).toISOString();
+  return (ms % 1000 === 0 ? t.replace('.000Z', '+00:00') : t.replace('Z', '+00:00'));
 }
 
 // ---- application ----------------------------------------------------------
@@ -71,7 +73,30 @@ function createApp({ log = defaultLog } = {}) {
       visibility: p.visibility,
       request_id: p.request_id,
       settlement_id: p.settlement_id,
+      authorization_id: p.authorization_id,
       created_at: iso(p.created_at),
+    };
+  }
+
+  function authView(s, a) {
+    const open = a.status === 'open';
+    return {
+      authorization_id: a.authorization_id,
+      from_user_id: a.from_user_id,
+      from_handle: handleOf(s, a.from_user_id),
+      to_user_id: a.to_user_id,
+      to_handle: handleOf(s, a.to_user_id),
+      amount: a.amount,
+      captured_amount: a.captured_amount,
+      remaining_amount: open ? a.amount - a.captured_amount : 0,
+      currency: s.currency,
+      note: a.note,
+      visibility: a.visibility,
+      status: a.status,
+      expires_at: iso(a.expires_at),
+      payment_id: a.payment_ids.length ? a.payment_ids[a.payment_ids.length - 1] : null,
+      payment_ids: [...a.payment_ids],
+      created_at: iso(a.created_at),
     };
   }
 
@@ -187,7 +212,10 @@ function createApp({ log = defaultLog } = {}) {
     const s = state; const u = ctx.user;
     return {
       status: 200,
-      body: { user_id: u.id, display_name: u.display_name, handle: u.handle, balance: u.balance, currency: s.currency, minor_units: s.minor_units },
+      body: {
+        user_id: u.id, display_name: u.display_name, handle: u.handle, balance: u.balance, total: u.balance,
+        available: s.available(u.id), held: s.held(u.id), currency: s.currency, minor_units: s.minor_units,
+      },
     };
   }
 
@@ -202,12 +230,12 @@ function createApp({ log = defaultLog } = {}) {
       const visibility = visibilityOf(b);
       const to = s.byHandle.get(toHandle);
       if (!to) notFound('no user has that handle');
-      if (caller.balance < amount) fail(409, 'insufficient_funds', 'balance is below amount');
+      if (s.available(caller.id) < amount) fail(409, 'insufficient_funds', 'available balance is below amount');
       creditFits(s, to.id, amount);
       const t = s.now();
       const p = {
         payment_id: s.newId('p', s.paymentById), from_user_id: caller.id, to_user_id: to.id, amount, note, visibility,
-        request_id: null, settlement_id: null, created_at: t, seq: s.nextSeq(),
+        request_id: null, settlement_id: null, authorization_id: null, created_at: t, seq: s.nextSeq(),
       };
       const view = paymentView(s, p); // rendered before anything changes
       s.applyTransfers([{ from: caller.id, to: to.id, amount }]);
@@ -256,12 +284,12 @@ function createApp({ log = defaultLog } = {}) {
       const caller = ctx.user;
       if (r.payer_id !== caller.id) fail(403, 'forbidden', 'only the payer may pay');
       if (r.status !== 'pending') fail(409, 'request_not_pending', `request is ${r.status}`);
-      if (caller.balance < r.amount) fail(409, 'insufficient_funds', 'balance is below amount');
+      if (s.available(caller.id) < r.amount) fail(409, 'insufficient_funds', 'available balance is below amount');
       creditFits(s, r.requester_id, r.amount);
       const t = s.now();
       const p = {
         payment_id: s.newId('p', s.paymentById), from_user_id: caller.id, to_user_id: r.requester_id, amount: r.amount,
-        note: r.note, visibility, request_id: r.request_id, settlement_id: null, created_at: t, seq: s.nextSeq(),
+        note: r.note, visibility, request_id: r.request_id, settlement_id: null, authorization_id: null, created_at: t, seq: s.nextSeq(),
       };
       const view = paymentView(s, p);
       s.applyTransfers([{ from: caller.id, to: r.requester_id, amount: r.amount }]);
@@ -373,14 +401,14 @@ function createApp({ log = defaultLog } = {}) {
         net.set(e.to.id, (net.get(e.to.id) || 0) + e.amount);
       }
       for (const [id, d] of net) {
-        if (d < 0 && !s.fits(id, d)) fail(409, 'insufficient_funds', 'settlement is not affordable');
+        if (d < 0 && s.available(id) < -d) fail(409, 'insufficient_funds', 'settlement is not affordable');
       }
       for (const [id, d] of net) if (d > 0) creditFits(s, id, d); // D39, after insufficient_funds
       const t = s.now();
       const settlementId = s.newId('st', s.settlements);
       const payments = entries.map((e) => ({
         payment_id: s.newId('p', s.paymentById), from_user_id: e.from.id, to_user_id: e.to.id, amount: e.amount,
-        note: e.note, visibility: e.visibility, request_id: null, settlement_id: settlementId, created_at: t, seq: s.nextSeq(),
+        note: e.note, visibility: e.visibility, request_id: null, settlement_id: settlementId, authorization_id: null, created_at: t, seq: s.nextSeq(),
       }));
       const view = { settlement_id: settlementId, committed_at: iso(t), payments: payments.map((p) => paymentView(s, p)) };
       s.applyTransfers(entries.map((e) => ({ from: e.from.id, to: e.to.id, amount: e.amount })));
@@ -390,6 +418,96 @@ function createApp({ log = defaultLog } = {}) {
       });
       return view;
     });
+  }
+
+  // ---- authorizations (S2-R3..R9) ---------------------------------------------------
+
+  function createAuthorization(ctx) {
+    return idempotent(ctx, (s) => {
+      const b = ctx.body; const caller = ctx.user;
+      stringType(b, 'to_handle');
+      const toHandle = requireString(b, 'to_handle');
+      const amount = amountOf(b);
+      if (toHandle === caller.handle) fail(422, 'self_payment', 'cannot authorize yourself');
+      const note = noteOf(b);
+      const visibility = visibilityOf(b);
+      const to = s.byHandle.get(toHandle);
+      if (!to) notFound('no user has that handle');
+      if (s.available(caller.id) < amount) fail(409, 'insufficient_funds', 'available balance is below amount');
+      const t = s.now();
+      const a = {
+        authorization_id: s.newId('au', s.authById), from_user_id: caller.id, to_user_id: to.id, amount, captured_amount: 0,
+        note, visibility, status: 'open', expires_at: Math.min(t + s.ttl * 1000, MAX_TIME), payment_ids: [], created_at: t, seq: s.nextSeq(),
+      };
+      const view = authView(s, a);
+      // defence in depth: re-check just before the write
+      if (s.available(caller.id) < amount) throw new InvariantError('invariant: hold exceeds available');
+      s.addAuthorization(a);
+      return view;
+    });
+  }
+
+  function findAuth(s, id) {
+    const a = s.authById.get(id);
+    if (!a) notFound('no such authorization');
+    return a;
+  }
+
+  function captureAuthorization(ctx) {
+    return idempotent(ctx, (s) => {
+      const b = ctx.body; const caller = ctx.user;
+      if (Object.hasOwn(b, 'final') && typeof b.final !== 'boolean') malformed('final must be a boolean');
+      let amount = null;
+      if (Object.hasOwn(b, 'amount')) amount = amountOf(b);
+      const a = findAuth(s, ctx.params.id);
+      if (a.to_user_id !== caller.id) fail(403, 'forbidden', 'only the receiver may capture');
+      if (a.status === 'captured' || a.status === 'voided') fail(409, 'authorization_not_open', `authorization is ${a.status}`);
+      if (a.status === 'expired') fail(409, 'authorization_expired', 'authorization has expired');
+      const remaining = a.amount - a.captured_amount;
+      if (amount === null) amount = remaining;
+      if (amount > remaining) fail(422, 'capture_exceeds_authorization', 'amount exceeds the remaining hold');
+      creditFits(s, caller.id, amount);
+      const closes = b.final !== false || amount === remaining;
+      const t = s.now();
+      const p = {
+        payment_id: s.newId('p', s.paymentById), from_user_id: a.from_user_id, to_user_id: caller.id, amount, note: a.note,
+        visibility: a.visibility, request_id: null, settlement_id: null, authorization_id: a.authorization_id, created_at: t, seq: s.nextSeq(),
+      };
+      // Move the money first (its guard refuses a write that would break available >= 0), then
+      // record the capture; nothing below can throw.
+      s.applyTransfers([{ from: a.from_user_id, to: caller.id, amount }], new Map([[a.from_user_id, amount]]));
+      s.addPayment(p);
+      a.captured_amount += amount;
+      a.payment_ids.push(p.payment_id);
+      if (closes) { a.status = 'captured'; s.openAuths.delete(a.authorization_id); }
+      return paymentView(s, p);
+    });
+  }
+
+  function voidAuthorization(ctx) {
+    const s = state;
+    const a = findAuth(s, ctx.params.id);
+    if (a.from_user_id !== ctx.user.id) fail(403, 'forbidden', 'only the payer may void');
+    if (a.status === 'open') { a.status = 'voided'; s.openAuths.delete(a.authorization_id); }
+    else if (a.status !== 'voided') fail(409, 'authorization_not_open', `authorization is ${a.status}`);
+    return { status: 200, body: authView(s, a) };
+  }
+
+  function listAuthorizations(ctx) {
+    const s = state; const q = ctx.query; const uid = ctx.user.id;
+    const direction = q.get('direction');
+    if (direction !== null && direction !== 'incoming' && direction !== 'outgoing') invalid('unknown direction');
+    const status = q.get('status');
+    if (status !== null && !AUTH_STATUSES.has(status)) invalid('unknown status');
+    const pg = page(q);
+    const pred = (a) => {
+      if (direction === 'incoming' ? a.to_user_id !== uid
+        : direction === 'outgoing' ? a.from_user_id !== uid
+          : a.to_user_id !== uid && a.from_user_id !== uid) return false;
+      return status === null || a.status === status;
+    };
+    const res = pageNewestFirst(s.authorizations, pred, pg);
+    return { status: 200, body: { authorizations: res.items.map((a) => authView(s, a)), has_more: res.has_more } };
   }
 
   // ---- auth -----------------------------------------------------------------------
@@ -520,6 +638,10 @@ function createApp({ log = defaultLog } = {}) {
     { method: 'POST', path: /^\/requests\/([^/]+)\/cancel$/, auth: true, fn: cancelRequest },
     { method: 'POST', path: '/splits', body: 'api', auth: true, fn: createSplit },
     { method: 'GET', path: '/activity', auth: true, fn: listActivity },
+    { method: 'POST', path: '/authorizations', body: 'api', auth: true, fn: createAuthorization },
+    { method: 'GET', path: '/authorizations', auth: true, fn: listAuthorizations },
+    { method: 'POST', path: /^\/authorizations\/([^/]+)\/capture$/, body: 'api', auth: true, fn: captureAuthorization },
+    { method: 'POST', path: /^\/authorizations\/([^/]+)\/void$/, auth: true, fn: voidAuthorization },
     { method: 'POST', path: '/settlements', body: 'api', auth: true, operator: true, fn: createSettlement },
   ];
 
@@ -626,7 +748,10 @@ function createApp({ log = defaultLog } = {}) {
       if (route.body) ctx.body = parseBody(await readBody(req), route.body);
       else req.resume();
       // From here to the response, normal routes run synchronously (D22).
-      if (route.auth) ctx.user = authenticate(req);
+      if (route.auth) {
+        ctx.user = authenticate(req);
+        state.expire(state.now()); // D32
+      }
       if (route.operator && !state.operators.has(ctx.user.id)) fail(403, 'forbidden', 'settlement operators only');
       const out = await route.fn(ctx);
       send(res, out.status, out.body);

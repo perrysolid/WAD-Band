@@ -12,13 +12,13 @@ test('R14 payment response shape, defaults and atomic movement', async () => {
   const w = await t.world();
   const r = await t.pay(w.ada, 'bob', 1500);
   assert.equal(r.status, 201);
-  assert.deepEqual(Object.keys(r.body).sort(), ['amount', 'created_at', 'currency', 'from_handle', 'from_user_id', 'note',
+  assert.deepEqual(Object.keys(r.body).sort(), ['amount', 'authorization_id', 'created_at', 'currency', 'from_handle', 'from_user_id', 'note',
     'payment_id', 'request_id', 'settlement_id', 'to_handle', 'to_user_id', 'visibility']);
   assert.equal(r.body.note, '');
   assert.equal(r.body.visibility, 'public');
   assert.equal(r.body.request_id, null);
   assert.equal(r.body.settlement_id, null);
-  assert.match(r.body.created_at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}\+00:00$/);
+  assert.match(r.body.created_at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{3})?\+00:00$/);
   assert.equal(await t.balance(w.ada), 8500);
   assert.equal(await t.balance(w.bob), 4000);
 });

@@ -76,7 +76,7 @@ test('R11 missing, malformed and unknown tokens are 401', async () => {
 test('R13 /me has exactly the specified fields', async () => {
   await t.reset(fixture({ currency: 'JPY', minor_units: 0 }));
   const me = await t.call('GET', '/me', { token: await t.login('ada@example.com') });
-  assert.deepEqual(me.body, { user_id: 'u_ada', display_name: 'Ada', handle: 'ada', balance: 10000, currency: 'JPY', minor_units: 0 });
+  assert.deepEqual(me.body, { user_id: 'u_ada', display_name: 'Ada', handle: 'ada', balance: 10000, total: 10000, available: 10000, held: 0, currency: 'JPY', minor_units: 0 });
   assert.equal(me.headers.get('content-type'), 'application/json; charset=utf-8');
 });
 

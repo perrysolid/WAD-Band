@@ -182,17 +182,14 @@ test('D14 seeded scrypt cost scales down with the number of distinct passwords',
   assert.ok(seedCost(10 ** 7).N >= 16);
 });
 
-test('R35 R36 unknown routes and later-stage surfaces are 404', async () => {
+// Stage 2 amends R35: /, /authorizations, /me totals and authorization_id now exist (D26); stages 3-4 stay absent.
+test('R35 R36 unknown routes and stage 3/4 surfaces are 404', async () => {
   const w = await t.world();
-  for (const [m, p] of [['GET', '/'], ['GET', '/authorizations'], ['POST', '/authorizations'], ['GET', '/statement'],
+  for (const [m, p] of [['GET', '/statement'],
     ['POST', '/payments/p_1/refunds'], ['POST', '/payments/p_1/corrections'], ['GET', '/payments/p_1/revisions'],
     ['POST', '/correction-batches'], ['GET', '/payments'], ['DELETE', '/me'], ['PUT', '/requests'], ['GET', '/requests/x']]) {
     expectError(assert, await t.call(m, p, { token: w.ada }), 404, 'not_found');
   }
-  const me = await t.call('GET', '/me', { token: w.ada });
-  for (const k of ['total', 'available', 'held']) assert.ok(!(k in me.body));
-  const html = await t.call('GET', '/requests', { token: w.ada, headers: { Accept: 'text/html' } });
-  assert.equal(html.headers.get('content-type'), 'application/json; charset=utf-8');
   const p = await t.pay(w.ada, 'bob', 1);
-  for (const k of ['authorization_id', 'refund_of']) assert.ok(!(k in p.body));
+  for (const k of ['refund_of', 'closed_at', 'effective_at']) assert.ok(!(k in p.body));
 });

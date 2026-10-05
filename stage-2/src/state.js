@@ -5,7 +5,8 @@
 const { COST_LADDER } = require('./hash');
 
 const SCHEMA = 'pocketful-state';
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
+const MAX_TTL = 1e10;               // seconds; keeps expires_at inside the D40 time range
 const MAX_BALANCE = 2 ** 53;
 const MAX_AMOUNT = 1000000000;
 const MAX_TIME = 253402300799999; // 9999-12-31T23:59:59.999Z, the widest D10 instant (D40)
@@ -13,6 +14,7 @@ const MAX_COUNTER = 2 ** 50;        // counters stay exact integers with room to
 const HANDLE_RE = /^[a-z0-9_]{1,20}$/;
 const VISIBILITIES = new Set(['public', 'private']);
 const STATUSES = new Set(['pending', 'paid', 'declined', 'cancelled']);
+const AUTH_STATUSES = new Set(['open', 'captured', 'voided', 'expired']);
 
 class Invalid extends Error {}
 function need(cond, msg) {
@@ -24,7 +26,7 @@ class State {
     this.currency = currency;
     this.minor_units = minorUnits;
     this.clock = 0;
-    this.counters = { u: 0, p: 0, rq: 0, sp: 0, st: 0, seq: 0 };
+    this.counters = { u: 0, p: 0, rq: 0, sp: 0, st: 0, au: 0, seq: 0 };
     this.users = new Map();      // id -> user
     this.byHandle = new Map();   // handle -> user
     this.byEmail = new Map();    // lower(email) -> user
@@ -37,6 +39,10 @@ class State {
     this.settlements = new Map();
     this.operators = new Set();
     this.idem = new Map();       // scope key -> record
+    this.ttl = 600;              // authorization_ttl_seconds (S2-R2)
+    this.authorizations = [];    // creation order
+    this.authById = new Map();
+    this.openAuths = new Map();  // id -> auth whose stored status is 'open'
   }
 
   now() {
@@ -77,6 +83,30 @@ class State {
     this.requestById.set(r.request_id, r);
   }
 
+  addAuthorization(a) {
+    this.authorizations.push(a);
+    this.authById.set(a.authorization_id, a);
+    if (a.status === 'open') this.openAuths.set(a.authorization_id, a);
+  }
+
+  // D32: every open hold whose expires_at has passed releases its remainder. Called at
+  // the start of each request's synchronous section; there is no background job.
+  expire(now) {
+    for (const [id, a] of this.openAuths) {
+      if (a.expires_at <= now) { a.status = 'expired'; this.openAuths.delete(id); }
+    }
+  }
+
+  held(userId) {
+    let h = 0;
+    for (const a of this.openAuths.values()) if (a.from_user_id === userId) h += a.amount - a.captured_amount;
+    return h;
+  }
+
+  available(userId) {
+    return this.users.get(userId).balance - this.held(userId);
+  }
+
   // D39: would `balance + d` stay within [0, 2^53]? Exact: every operand is an
   // integer of magnitude ≤ 2^53, so neither comparison rounds.
   fits(userId, d) {
@@ -87,7 +117,9 @@ class State {
   // Apply a set of transfers atomically. Defence in depth (D22, D39): the deltas
   // must net to zero and every touched balance must stay within [0, 2^53];
   // otherwise nothing is applied and an error is thrown.
-  applyTransfers(transfers) {
+  // `release` (userId -> amount) is hold money consumed by this very step (a capture), so a
+  // wallet may drop to its remaining hold but never below it: available stays >= 0.
+  applyTransfers(transfers, release = new Map()) {
     const delta = new Map();
     let net = 0;
     for (const t of transfers) {
@@ -100,7 +132,9 @@ class State {
     for (const [id, d] of delta) {
       net += d;
       if (!this.fits(id, d)) throw new InvariantError('invariant: balance out of range');
-      after.set(id, this.users.get(id).balance + d);
+      const b = this.users.get(id).balance + d;
+      if (d < 0 && b < this.held(id) - (release.get(id) || 0)) throw new InvariantError('invariant: available would go negative');
+      after.set(id, b);
     }
     if (net !== 0) throw new InvariantError('invariant: transfers do not net to zero');
     for (const [id, b] of after) this.users.get(id).balance = b;
@@ -123,6 +157,8 @@ class State {
       splits: [...this.splits.values()].map((s) => ({ ...s, shares: s.shares.map((x) => ({ ...x })), request_ids: [...s.request_ids] })),
       settlements: [...this.settlements.values()].map((s) => ({ ...s, payment_ids: [...s.payment_ids] })),
       operators: [...this.operators],
+      authorization_ttl_seconds: this.ttl,
+      authorizations: this.authorizations.map((a) => ({ ...a, payment_ids: [...a.payment_ids] })),
       idempotency: [...this.idem.values()].map((r) => ({ ...r })),
     };
   }
@@ -139,6 +175,26 @@ const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const codePoints = (s) => { let n = 0; for (const _ of s) n += 1; return n; };
 const isAmount = (v) => isInt(v) && v >= 1 && v <= MAX_AMOUNT;
 const isNote = (v) => isStr(v) && codePoints(v) <= 200;
+
+// RFC 3339 with an explicit offset -> epoch ms (fraction truncated to ms), or null.
+function parseInstant(v) {
+  if (!isStr(v)) return null;
+  const m = /^(\d{4})-(\d\d)-(\d\d)[Tt](\d\d):(\d\d):(\d\d)(?:\.(\d+))?(?:[Zz]|([+-])(\d\d):(\d\d))$/.exec(v);
+  if (!m) return null;
+  const [Y, M, D, h, mi, sec] = m.slice(1, 7).map(Number);
+  if (M < 1 || M > 12 || D < 1 || h > 23 || mi > 59 || sec > 59) return null;
+  const dim = new Date(Date.UTC(2000, M, 0)).getUTCDate(); // days in M of a leap year
+  const leap = (Y % 4 === 0 && Y % 100 !== 0) || Y % 400 === 0;
+  if (D > (M === 2 ? (leap ? 29 : 28) : dim)) return null;
+  let off = 0;
+  if (m[8]) {
+    const oh = Number(m[9]); const om = Number(m[10]);
+    if (oh > 23 || om > 59) return null;
+    off = (m[8] === '-' ? -1 : 1) * (oh * 60 + om) * 60000;
+  }
+  const ms = Date.UTC(Y, M - 1, D, h, mi, sec, Number(((m[7] || '') + '000').slice(0, 3))) - off;
+  return ms >= 0 && ms <= MAX_TIME ? ms : null;
+}
 
 // ---- fixture (reset) ------------------------------------------------------
 
@@ -185,6 +241,32 @@ function validateFixture(fx) {
     rids.add(r.id);
   }
   for (const o of operators) need(ids.has(o), 'operator');
+  need(fx.authorization_ttl_seconds === undefined
+    || (isInt(fx.authorization_ttl_seconds) && fx.authorization_ttl_seconds >= 1 && fx.authorization_ttl_seconds <= MAX_TTL), 'authorization_ttl_seconds');
+  const auths = fx.authorizations === undefined ? [] : fx.authorizations;
+  need(Array.isArray(auths), 'authorizations');
+  const aids = new Set();
+  const balance = new Map(fx.users.map((u) => [u.id, u.balance]));
+  const reserved = new Map();
+  const now = Date.now();
+  for (const a of auths) {
+    need(isObj(a), 'authorization');
+    need(isId(a.id) && !aids.has(a.id), 'authorization id');
+    need(ids.has(a.from_user_id) && ids.has(a.to_user_id), 'authorization users');
+    need(isAmount(a.amount), 'authorization amount');
+    need(a.note === undefined || isNote(a.note), 'authorization note');
+    need(a.visibility === undefined || VISIBILITIES.has(a.visibility), 'authorization visibility');
+    need(isStr(a.status) && AUTH_STATUSES.has(a.status), 'authorization status');
+    const exp = parseInstant(a.expires_at);
+    need(exp !== null, 'authorization expires_at');
+    need(a.captured_amount === undefined || (isInt(a.captured_amount) && a.captured_amount >= 0 && a.captured_amount <= a.amount), 'authorization captured_amount');
+    need(a.payment_id === undefined || a.payment_id === null || pids.has(a.payment_id), 'authorization payment_id');
+    const cap = a.captured_amount === undefined ? (a.status === 'captured' ? a.amount : 0) : a.captured_amount;
+    need(a.status !== 'open' || cap < a.amount, 'authorization captured_amount');
+    aids.add(a.id);
+    if (a.status === 'open' && exp > now) reserved.set(a.from_user_id, (reserved.get(a.from_user_id) || 0) + a.amount - cap);
+  }
+  for (const [id, r] of reserved) need(r <= balance.get(id), 'holds exceed balance');
   return fx.users.map((u) => u.password);
 }
 
@@ -203,7 +285,7 @@ function stateFromFixture(fx, creds) {
       payment_id: p.id, from_user_id: p.from_user_id, to_user_id: p.to_user_id,
       amount: p.amount, note: p.note === undefined ? '' : p.note,
       visibility: p.visibility === undefined ? 'public' : p.visibility,
-      request_id: null, settlement_id: null, created_at: t, seq: s.nextSeq(),
+      request_id: null, settlement_id: null, authorization_id: null, created_at: t, seq: s.nextSeq(),
     });
   }
   for (const r of fx.requests || []) {
@@ -216,6 +298,17 @@ function stateFromFixture(fx, creds) {
     });
   }
   for (const o of fx.settlement_operator_ids || []) s.operators.add(o);
+  if (fx.authorization_ttl_seconds !== undefined) s.ttl = fx.authorization_ttl_seconds;
+  for (const a of fx.authorizations || []) {
+    const exp = parseInstant(a.expires_at);
+    const cap = a.captured_amount === undefined ? (a.status === 'captured' ? a.amount : 0) : a.captured_amount;
+    s.addAuthorization({
+      authorization_id: a.id, from_user_id: a.from_user_id, to_user_id: a.to_user_id, amount: a.amount, captured_amount: cap,
+      note: a.note === undefined ? '' : a.note, visibility: a.visibility === undefined ? 'public' : a.visibility,
+      status: a.status === 'open' && exp <= t ? 'expired' : a.status, expires_at: exp,
+      payment_ids: a.payment_id ? [a.payment_id] : [], created_at: t, seq: s.nextSeq(),
+    });
+  }
   return s;
 }
 
@@ -225,20 +318,26 @@ function stateFromFixture(fx, creds) {
 function stateFromExport(st) {
   need(isObj(st), 'state');
   need(st.schema === SCHEMA, 'schema');
-  need(isInt(st.schema_version) && st.schema_version === SCHEMA_VERSION, 'schema_version');
+  need(isInt(st.schema_version) && (st.schema_version === 1 || st.schema_version === SCHEMA_VERSION), 'schema_version');
+  const v2 = st.schema_version === 2; // D34: version 1 is upgraded (no authorizations, ttl 600)
   need(isStr(st.currency) && st.currency.length > 0, 'currency');
   need([0, 2, 3].includes(st.minor_units), 'minor_units');
   need(isInt(st.clock) && st.clock >= 0 && st.clock <= MAX_TIME, 'clock');
   need(isObj(st.counters), 'counters');
-  for (const k of ['u', 'p', 'rq', 'sp', 'st', 'seq']) {
+  for (const k of v2 ? ['u', 'p', 'rq', 'sp', 'st', 'au', 'seq'] : ['u', 'p', 'rq', 'sp', 'st', 'seq']) {
     need(isInt(st.counters[k]) && st.counters[k] >= 0 && st.counters[k] <= MAX_COUNTER, 'counter');
+  }
+  if (v2) {
+    need(isInt(st.authorization_ttl_seconds) && st.authorization_ttl_seconds >= 1 && st.authorization_ttl_seconds <= MAX_TTL, 'authorization_ttl_seconds');
+    need(Array.isArray(st.authorizations), 'authorizations');
   }
   for (const k of ['users', 'tokens', 'payments', 'requests', 'splits', 'settlements', 'operators', 'idempotency']) {
     need(Array.isArray(st[k]), k);
   }
   const s = new State(st.currency, st.minor_units);
   s.clock = st.clock;
-  s.counters = { u: st.counters.u, p: st.counters.p, rq: st.counters.rq, sp: st.counters.sp, st: st.counters.st, seq: st.counters.seq };
+  s.counters = { u: st.counters.u, p: st.counters.p, rq: st.counters.rq, sp: st.counters.sp, st: st.counters.st, au: v2 ? st.counters.au : 0, seq: st.counters.seq };
+  if (v2) s.ttl = st.authorization_ttl_seconds;
   const isTime = (v) => isInt(v) && v >= 0 && v <= s.clock;
   const isSeq = (v) => isInt(v) && v >= 0 && v <= s.counters.seq;
 
@@ -271,11 +370,12 @@ function stateFromExport(st) {
     need(isNote(p.note) && VISIBILITIES.has(p.visibility), 'payment note/visibility');
     need(p.request_id === null || isId(p.request_id), 'payment request');
     need(p.settlement_id === null || isId(p.settlement_id), 'payment settlement');
+    need(!v2 || p.authorization_id === null || isId(p.authorization_id), 'payment authorization');
     need(isTime(p.created_at) && isSeq(p.seq), 'payment time');
     s.addPayment({
       payment_id: p.payment_id, from_user_id: p.from_user_id, to_user_id: p.to_user_id, amount: p.amount,
       note: p.note, visibility: p.visibility, request_id: p.request_id, settlement_id: p.settlement_id,
-      created_at: p.created_at, seq: p.seq,
+      authorization_id: v2 ? p.authorization_id : null, created_at: p.created_at, seq: p.seq,
     });
   }
   for (const r of st.requests) {
@@ -315,6 +415,24 @@ function stateFromExport(st) {
     });
   }
   for (const p of s.payments) need(p.settlement_id === null || s.settlements.has(p.settlement_id), 'payment settlement ref');
+  const reserved = new Map();
+  for (const a of v2 ? st.authorizations : []) {
+    need(isObj(a) && isId(a.authorization_id) && !s.authById.has(a.authorization_id), 'authorization id');
+    need(s.users.has(a.from_user_id) && s.users.has(a.to_user_id), 'authorization users');
+    need(isAmount(a.amount) && isInt(a.captured_amount) && a.captured_amount >= 0 && a.captured_amount <= a.amount, 'authorization amounts');
+    need(isNote(a.note) && VISIBILITIES.has(a.visibility) && isStr(a.status) && AUTH_STATUSES.has(a.status), 'authorization fields');
+    need(isInt(a.expires_at) && a.expires_at >= 0 && a.expires_at <= MAX_TIME && isTime(a.created_at) && isSeq(a.seq), 'authorization time');
+    need(Array.isArray(a.payment_ids) && a.payment_ids.every((id) => s.paymentById.has(id)), 'authorization payments');
+    need(a.status !== 'open' || a.captured_amount < a.amount, 'authorization remainder');
+    s.addAuthorization({
+      authorization_id: a.authorization_id, from_user_id: a.from_user_id, to_user_id: a.to_user_id, amount: a.amount,
+      captured_amount: a.captured_amount, note: a.note, visibility: a.visibility, status: a.status, expires_at: a.expires_at,
+      payment_ids: [...a.payment_ids], created_at: a.created_at, seq: a.seq,
+    });
+    if (a.status === 'open' && a.expires_at > s.clock) reserved.set(a.from_user_id, (reserved.get(a.from_user_id) || 0) + a.amount - a.captured_amount);
+  }
+  for (const p of s.payments) need(p.authorization_id === null || s.authById.has(p.authorization_id), 'payment authorization ref');
+  for (const [id, r] of reserved) need(r <= s.users.get(id).balance, 'holds exceed balance');
   for (const o of st.operators) {
     need(s.users.has(o), 'operator');
     s.operators.add(o);
@@ -330,8 +448,8 @@ function stateFromExport(st) {
   return s;
 }
 
-// The five idempotent write paths (§7).
-const IDEM_PATH = /^\/(payments|requests|splits|settlements|requests\/[^/]+\/pay)$/;
+// The seven idempotent write paths (§7).
+const IDEM_PATH = /^\/(payments|requests|splits|settlements|authorizations|requests\/[^/]+\/pay|authorizations\/[^/]+\/capture)$/;
 
 function idemScope(userId, method, path, key) {
   return JSON.stringify([userId, method, path, key]);
@@ -339,5 +457,5 @@ function idemScope(userId, method, path, key) {
 
 module.exports = {
   State, Invalid, InvariantError, validateFixture, stateFromFixture, stateFromExport, idemScope,
-  codePoints, MAX_AMOUNT, MAX_BALANCE, MAX_TIME, HANDLE_RE, VISIBILITIES, STATUSES,
+  codePoints, parseInstant, MAX_TTL, MAX_AMOUNT, MAX_BALANCE, MAX_TIME, HANDLE_RE, VISIBILITIES, STATUSES, AUTH_STATUSES,
 };
