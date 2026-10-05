@@ -1,10 +1,15 @@
 """§8 GET /me and POST /payments, §4 amounts, §5 field rules."""
 from __future__ import annotations
 
+import os
+
 import pytest
 
 import pf_model as m
 from pf_client import expect, expect_error, new_key
+
+# DECISION PF_STAGE: run against a later stage's build with PF_STAGE=2 (stage-2 adds fields)
+PF_STAGE = int(os.environ.get("PF_STAGE", "1"))
 
 PAYMENT_FIELDS = {"payment_id", "from_user_id", "from_handle", "to_user_id", "to_handle",
                   "amount", "currency", "note", "visibility", "request_id", "created_at",
@@ -13,8 +18,13 @@ PAYMENT_FIELDS = {"payment_id", "from_user_id", "from_handle", "to_user_id", "to
 
 def test_me_shape(world):
     """[§8 GET /me]"""
-    assert world.ada.me() == {"user_id": "u_ada", "display_name": "Ada", "handle": "ada",
-                              "balance": 10_000, "currency": "EUR", "minor_units": 2}
+    stage1 = {"user_id": "u_ada", "display_name": "Ada", "handle": "ada",
+              "balance": 10_000, "currency": "EUR", "minor_units": 2}
+    me = world.ada.me()
+    if PF_STAGE >= 2:
+        assert {k: me.get(k) for k in stage1} == stage1 and me["balance"] == me["total"]
+    else:
+        assert me == stage1
 
 
 def test_payment_shape_and_effect(world):

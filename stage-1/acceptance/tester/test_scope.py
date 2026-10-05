@@ -1,9 +1,16 @@
 """Overshoot guard: the stage-1 folder must not expose later stages' surface."""
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from pf_client import expect, expect_error, new_key
+
+# DECISION PF_STAGE: a later stage's build legitimately has this surface; its own suite
+# carries the overshoot guard for the stages after it.
+pytestmark = pytest.mark.skipif(int(os.environ.get("PF_STAGE", "1")) >= 2,
+                                reason="stage-1 overshoot guard; PF_STAGE>=2")
 
 LATER = [("GET", "/authorizations"), ("POST", "/authorizations"),
          ("POST", "/authorizations/a_1/capture"), ("POST", "/authorizations/a_1/void"),
