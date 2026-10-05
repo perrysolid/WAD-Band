@@ -102,6 +102,9 @@ from stage 3 or 4.
 - **D38 UI tolerance for upgrade**: the UI reads `/me` with fallbacks (total = total ?? balance, available = available ?? balance, held = held ?? 0). A missing authorization_id/settlement_id/payment_ids is treated as null/[]. A 404 from GET /authorizations shows the empty state. No code path throws on a missing optional field. The tester covers the upgrade two ways: by forwarding the browser's API calls to stage 1 until the import, and by a stage-2 A → stage-2 B import.
 - **PF_STAGE (tester)**: when the stage-1 suite runs with PF_STAGE>=2, it skips test_scope.py and checks the /me keys as a subset plus balance == total.
 
+- **D39 Upper bound (all stages)**: any money-moving write that would leave a wallet above 2^53 → 422 validation_failed. The check is exact integer arithmetic at the funds step, after insufficient_funds; nothing changes and no key is claimed.
+- **D40 Import bounds (all stages)**: import validates every served or computed field (clock/created_at/committed_at in [0, 253402300799999], balances in [0, 2^53], amounts, ids 1–64 chars, scrypt params exactly as the service writes them, tokens, idempotency records). Anything else → 422 with the destination unchanged. A write never commits and then 5xx.
+
 ## Risk map (stage 2)
 
 1. Conservation and non-negativity with holds → S2-R1, R10, R11 (tester: 50-way authorize/capture/void/pay mixes with an oracle on Σtotal, available ≥ 0, Σcaptures ≤ amount).
