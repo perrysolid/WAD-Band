@@ -1,12 +1,17 @@
 """Overshoot guard: stage 2 must expose nothing from stages 3 and 4."""
 from __future__ import annotations
 
+import os
 from datetime import timedelta
 
 import pytest
 
 import pf_model as m
 from pf_client import expect, expect_error, new_key
+
+# DECISION PF_STAGE: a stage-3+ build legitimately has this surface; its own suite guards the next.
+pytestmark = pytest.mark.skipif(int(os.environ.get("PF_STAGE", "2")) >= 3,
+                                reason="stage-2 overshoot guard; PF_STAGE>=3")
 
 LATER = [("GET", "/statement"), ("GET", "/payments/{pid}/revisions"),
          ("POST", "/payments/{pid}/corrections"), ("POST", "/payments/{pid}/refunds"),
