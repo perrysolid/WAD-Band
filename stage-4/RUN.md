@@ -85,3 +85,20 @@ Served as HTML only when the client sends `Accept: text/html`; otherwise `/histo
   `history-page-info` ("Entries 21–25"), `history-empty`, `history-error`.
 - Paging: 20 entries per page. The first request is `GET /statement?limit=20&offset=0[&from=&to=]`; every later page is
   `GET /statement?snapshot=<token>&limit=20&offset=<n>` with nothing else, so pages stay consistent. A 404 on a snapshot says the statement is no longer available.
+
+## Payment detail (/payment/<id>) — test ids
+
+HTML only with `Accept: text/html` (the API has no /payment/... route, so no collision). Reached by clicking a feed or history item
+(the whole item, or the sentence link inside `activity-parties-{id}`). A non-party, or an unknown id, sees `payment-detail-unavailable`.
+
+`payment-detail-sentence`, `payment-detail-parties` ("@from → @to"), `payment-detail-amount` (original amount, `data-amount`),
+`payment-detail-current` (only after a correction, `data-amount` = corrected amount), `payment-detail-note`, `payment-detail-privacy`
+(`data-visibility`), `payment-detail-time`, `payment-detail-refund-of` (link, refunds only), `payment-detail-revisions` (list),
+`payment-detail-revision-{n}`, `payment-detail-revision-amount-{n}` (`data-amount`), `payment-detail-refresh`, `payment-detail-loading`,
+`payment-detail-error`, `payment-detail-unavailable`, `payment-detail-no-actions`.
+
+Refund form (receiver of a non-refund payment): `payment-detail-refund-amount`, `-submit`, `-error`, `-uncertain`, `-success`.
+Correct form (sender of an ordinary payment; not settlement members, captures or refunds): `payment-detail-correct-amount` (0 allowed),
+`-effective_at` (datetime-local, default now), `-reason`, `-submit`, `-error`, `-uncertain`, `-success`. The body sent is
+`{expected_revision, amount, effective_at (RFC 3339 + offset), reason}`; the expected revision is the latest one loaded.
+Both forms reuse their Idempotency-Key while the body is unchanged and mint a new one on any change.

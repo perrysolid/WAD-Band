@@ -61,10 +61,11 @@ function feedItem(p, me) {
   const id = p.payment_id;
   const sent = p.from_user_id === me.user_id;
   const other = sent ? p.to_handle : p.from_handle;
-  return h('li', { class: `item ${sent ? 'item-sent' : p.to_user_id === me.user_id ? 'item-received' : ''}`, testid: `activity-item-${id}`, 'data-visibility': p.visibility },
+  const open = (e) => { if (!e.target.closest('a, button')) location.assign(`/payment/${encodeURIComponent(id)}`); };
+  return h('li', { onclick: open, class: `item item-click ${sent ? 'item-sent' : p.to_user_id === me.user_id ? 'item-received' : ''}`, testid: `activity-item-${id}`, 'data-visibility': p.visibility },
     h('div', { class: 'item-top' },
       h('div', { class: 'item-id' }, avatar(other),
-        h('p', { class: 'item-who', testid: `activity-parties-${id}` }, sentence(p, me.user_id), h('span', { class: 'pair', text: ` @${p.from_handle} → @${p.to_handle}` }))),
+        h('p', { class: 'item-who', testid: `activity-parties-${id}` }, h('a', { class: 'item-link', href: `/payment/${encodeURIComponent(id)}`, text: sentence(p, me.user_id) }), h('span', { class: 'pair', text: ` @${p.from_handle} → @${p.to_handle}` }))),
       h('p', { class: 'item-amount', testid: `activity-amount-${id}`, text: formatMoney(p.amount, me.minor_units, me.currency) })),
     h('p', { class: 'item-note', testid: `activity-note-${id}`, text: p.note }),
     h('div', { class: 'item-meta' },

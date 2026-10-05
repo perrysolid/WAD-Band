@@ -471,3 +471,12 @@ time[title] { cursor: help; text-decoration: underline dotted; text-underline-of
 .pager { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); flex-wrap: wrap; }
 .pager .btn[disabled] { opacity: 0.5; cursor: not-allowed; }
 input[type="datetime-local"] { min-width: 0; }
+
+/* ---- payment detail ---- */
+.item-click { cursor: pointer; }
+.item-click:hover { border-color: var(--accent); }
+.item-link { color: inherit; text-decoration: none; }
+.item-link:hover, .item-link:focus-visible { text-decoration: underline; }
+.detail-box { display: grid; gap: var(--s5); }
+.detail-head { display: grid; gap: var(--s3); }
+.detail-head h2 { font-size: var(--t-lg); }

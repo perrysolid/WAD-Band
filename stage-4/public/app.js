@@ -9,6 +9,7 @@ import { requests } from './screens/requests.js';
 import { split } from './screens/split.js';
 import { authorizations } from './screens/authorizations.js';
 import { history } from './screens/history.js';
+import { payment } from './screens/payment.js';
 
 const PUBLIC = { '/login': login, '/signup': signup };
 const PRIVATE = { '/': home, '/requests': requests, '/split': split, '/authorizations': authorizations, '/history': history };
@@ -23,9 +24,10 @@ function boot() {
     root.replaceChildren(...view.nodes);
     return;
   }
-  if (!PRIVATE[route]) { location.replace('/'); return; }
+  const detail = /^\/payment\/([^/]+)$/.exec(route);
+  if (!PRIVATE[route] && !detail) { location.replace('/'); return; }
   if (!token.get()) { location.replace('/login'); return; }
-  const view = PRIVATE[route]();
+  const view = detail ? payment(decodeURIComponent(detail[1])) : PRIVATE[route]();
   const shell = frame(route, view.nodes);
   document.title = `${view.title} · Pocketful`;
   root.replaceChildren(...shell.nodes);

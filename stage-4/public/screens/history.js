@@ -84,7 +84,7 @@ export function history() {
     return h('li', { class: `item ${en.delta < 0 ? 'item-sent' : en.delta > 0 ? 'item-received' : ''}`, testid: `history-entry-${id}` },
       h('div', { class: 'item-top' },
         h('div', { class: 'item-id' }, avatar(sent ? p.to_handle : p.from_handle),
-          h('p', { class: 'item-who', testid: `history-entry-parties-${id}` }, sentence(p, me.user_id), p.note && h('span', { class: 'pair', text: p.note }))),
+          h('p', { class: 'item-who', testid: `history-entry-parties-${id}` }, h('a', { class: 'item-link', href: `/payment/${encodeURIComponent(id)}`, text: sentence(p, me.user_id) }), p.note && h('span', { class: 'pair', text: p.note }))),
         h('p', { class: 'item-amount', testid: `history-delta-${id}`, 'data-amount': en.delta, text: signed(en.delta, me) })),
       h('div', { class: 'item-meta' },
         h('span', {}, 'Balance after ', h('strong', { testid: `history-balance-after-${id}`, 'data-amount': en.balance_after, text: formatMoney(en.balance_after, me.minor_units, me.currency) })),

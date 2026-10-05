@@ -58,6 +58,11 @@ const FRIENDLY = {
   email_taken: 'That email is already registered.',
   handle_taken: 'The handle derived from that email is already taken.',
   unauthenticated: 'The email or password is not right.',
+  refund_exceeds_payment: 'That is more than can still be refunded or removed on this payment. Refunds cannot add up to more than its current amount.',
+  invalid_refund_target: 'A refund cannot itself be refunded.',
+  linked_payment_immutable: 'Payments that came from a settlement, a hold capture or a refund cannot be corrected here.',
+  stale_revision: 'This payment was changed since you opened it. Refresh it, then try again.',
+  historical_overdraft: 'That change would have left someone with a negative balance at an earlier moment, so it was refused.',
 };
 
 export function messageOf(r) {

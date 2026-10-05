@@ -13,7 +13,7 @@ function field(prefix, f) {
     control = h('select', { id, testid: `${prefix}-${f.name}`, name: f.name }, f.options.map(([v, label]) => h('option', { value: v, text: label })));
   } else {
     control = h('input', {
-      id, testid: `${prefix}-${f.name}`, name: f.name, type: 'text', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false',
+      id, testid: `${prefix}-${f.name}`, name: f.name, type: f.type || 'text', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false',
       inputmode: f.inputmode, placeholder: f.placeholder, 'aria-describedby': f.hint ? `${id}-hint` : undefined,
     });
   }

@@ -948,7 +948,7 @@ function createApp({ log = defaultLog } = {}) {
   // GET UI pages and assets; returns true when it answered.
   function serveUi(req, res, path) {
     if (req.method !== 'GET') return false;
-    if (SHELLS.has(path) || (SHARED.has(path) && acceptsHtml(req.headers.accept))) { sendFile(res, ui.shell); return true; }
+    if (SHELLS.has(path) || ((SHARED.has(path) || /^\/payment\/[^/]+$/.test(path)) && acceptsHtml(req.headers.accept))) { sendFile(res, ui.shell); return true; }
     if (path.startsWith('/assets/')) {
       const f = ui.asset(path);
       if (!f) return false;
