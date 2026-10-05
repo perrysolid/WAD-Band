@@ -11,7 +11,6 @@ suite needs pytest + httpx; the UI and upgrade suites also need playwright + chr
 from __future__ import annotations
 
 import os
-import re
 import pathlib
 import sys
 from datetime import timedelta
@@ -191,14 +190,10 @@ class World:
             assert bal == st["closing_balance"], f"{handle}: closing != opening + deltas"
             assert st["closing_balance"] == w[handle][0], \
                 f"{handle}: statement closes at {st['closing_balance']} but total is {w[handle][0]}"
-            # ties on effective_at break by payment id; ids are opaque, so accept either the
-            # plain string order or the natural order (p_9 before p_10)
-            def nat(pid):
-                return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", pid)]
-            by_str = [(m.parse(e["effective_at"]), e["payment"]["payment_id"]) for e in es]
-            by_nat = [(m.parse(e["effective_at"]), nat(e["payment"]["payment_id"])) for e in es]
-            assert by_str == sorted(by_str) or by_nat == sorted(by_nat), \
-                f"{handle}: statement not ordered by effective_at, id"
+            # ties on effective_at break by payment id: opaque ids, so plain string order
+            # (architect DECISION D1: p_1, p_10, p_11, p_2)
+            keys = [(m.parse(e["effective_at"]), e["payment"]["payment_id"]) for e in es]
+            assert keys == sorted(keys), f"{handle}: statement not ordered by effective_at, id"
             totals[handle] = st["opening_balance"]
         # openings across every wallet sum to the seeded total as well
         assert sum(totals.values()) == self.total, \
