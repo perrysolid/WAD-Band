@@ -5,6 +5,7 @@
 // current state after awaiting.
 
 const http = require('node:http');
+const { randomUUID } = require('node:crypto');
 const { parse, canonical, exactInteger, isObject, JNum } = require('./json');
 const {
   State, Invalid, InvariantError, validateFixture, stateFromFixture, stateFromExport, idemScope,
@@ -34,7 +35,16 @@ function iso(ms) {
 
 // ---- application ----------------------------------------------------------
 
-function createApp() {
+// One JSON line per call. `out` receives the per-request access log, `err` the
+// error log. Neither ever receives bodies, tokens, passwords or keys.
+const defaultLog = {
+  out: (line) => process.stdout.write(line + '\n'),
+  err: (line) => process.stderr.write(line + '\n'),
+};
+
+const newRequestId = () => randomUUID();
+
+function createApp({ log = defaultLog } = {}) {
   let state = new State('EUR', 2);
   let control = Promise.resolve(); // serialises reset/import
 
@@ -157,10 +167,12 @@ function createApp() {
     const prior = s.idem.get(scope);
     if (prior) {
       if (prior.canon !== canon) fail(409, 'idempotency_key_reuse', 'key already used with a different body');
+      ctx.idem = 'replay';
       return { status: 200, body: prior.body };
     }
     const body = run(s);
     s.idem.set(scope, { user_id: ctx.user.id, method: 'POST', path: ctx.path, key, canon, status: 201, body });
+    ctx.idem = 'first';
     return { status: 201, body };
   }
 
@@ -548,28 +560,52 @@ function createApp() {
   function send(res, status, body) {
     if (res.headersSent) return;
     if (status === 204) {
-      res.writeHead(204);
+      res.writeHead(204, { 'X-Request-Id': res.requestId });
       res.end();
       return;
     }
     const data = JSON.stringify(body);
-    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(data) });
+    res.writeHead(status, {
+      'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(data), 'X-Request-Id': res.requestId,
+    });
     res.end(data);
   }
 
   const sendError = (res, status, code, message) => send(res, status, { error: { code, message } });
 
+  function accessLog(ctx, res, started) {
+    log.out(JSON.stringify({
+      ts: new Date().toISOString(),
+      request_id: res.requestId,
+      method: ctx.req.method,
+      path: ctx.path,
+      status: res.statusCode,
+      duration_ms: Math.round(Number(process.hrtime.bigint() - started) / 1e4) / 100,
+      user_id: ctx.user ? ctx.user.id : null,
+      idempotency: ctx.idem,
+    }));
+  }
+
   async function handle(req, res) {
+    const started = process.hrtime.bigint();
+    res.requestId = newRequestId();
+    const ctx = {
+      req, path: String(req.url).split('?')[0], params: {}, query: null, body: null, user: null, idem: 'none',
+    };
+    res.on('finish', () => accessLog(ctx, res, started));
+    res.on('close', () => { if (!res.writableFinished) accessLog(ctx, res, started); });
     try {
       const url = new URL(req.url, 'http://localhost');
       const path = url.pathname;
+      ctx.path = path;
+      ctx.query = url.searchParams;
       const hit = match(req.method, path);
       if (!hit) {
         req.resume();
         notFound('no such route');
       }
       const { route, params } = hit;
-      const ctx = { req, path, params, query: url.searchParams, body: null, user: null };
+      ctx.params = params;
       if (route.body) ctx.body = parseBody(await readBody(req), route.body);
       else req.resume();
       // From here to the response, normal routes run synchronously (D22).
@@ -582,7 +618,7 @@ function createApp() {
         sendError(res, e.status, e.code, e.message);
       } else {
         const code = e instanceof InvariantError ? 'invariant_violation' : 'internal_error';
-        process.stderr.write(JSON.stringify({ level: 'error', code, message: String(e && e.stack) }) + '\n');
+        log.err(JSON.stringify({ level: 'error', request_id: res.requestId, code, message: String(e && e.stack) }));
         sendError(res, 500, code, 'internal error');
       }
     }
@@ -591,13 +627,18 @@ function createApp() {
   return { handle, getState: () => state };
 }
 
-function createServer() {
-  const app = createApp();
+function createServer(opts = {}) {
+  const log = opts.log || defaultLog;
+  const app = createApp({ log });
   const server = http.createServer({ maxHeaderSize: 1 << 20, keepAliveTimeout: 30000 }, (req, res) => { app.handle(req, res); });
   server.on('clientError', (err, socket) => {
     if (socket.writable) {
+      const requestId = newRequestId();
       const data = JSON.stringify({ error: { code: 'malformed_request', message: 'bad HTTP request' } });
-      socket.end(`HTTP/1.1 400 Bad Request\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: ${Buffer.byteLength(data)}\r\nConnection: close\r\n\r\n${data}`);
+      socket.end(`HTTP/1.1 400 Bad Request\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: ${Buffer.byteLength(data)}\r\nX-Request-Id: ${requestId}\r\nConnection: close\r\n\r\n${data}`);
+      log.out(JSON.stringify({
+        ts: new Date().toISOString(), request_id: requestId, method: null, path: null, status: 400, duration_ms: 0, user_id: null, idempotency: 'none',
+      }));
     } else {
       socket.destroy();
     }

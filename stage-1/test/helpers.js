@@ -12,8 +12,9 @@ function fixture(extra = {}) {
   return { currency: 'EUR', minor_units: 2, users: [ADA, BOB, CY], payments: [], requests: [], ...extra };
 }
 
-async function start() {
-  const { server } = createServer();
+async function start(opts = {}) {
+  // The access log is silenced unless a test supplies its own sink.
+  const { server, app } = createServer({ log: { out() {}, err: (l) => process.stderr.write(l + '\n') }, ...opts });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
 
@@ -58,7 +59,7 @@ async function start() {
   const pay = (token, to, amount, extra = {}, key = newKey()) => call('POST', '/payments', { token, key, body: { to_handle: to, amount, ...extra } });
   const ask = (token, payer, amount, extra = {}, key = newKey()) => call('POST', '/requests', { token, key, body: { payer_handle: payer, amount, ...extra } });
 
-  return { base, call, reset, login, world, balance, pay, ask, close: () => new Promise((r) => { server.closeAllConnections(); server.close(r); }) };
+  return { base, app, call, reset, login, world, balance, pay, ask, close: () => new Promise((r) => { server.closeAllConnections(); server.close(r); }) };
 }
 
 function expectError(assert, res, status, code) {
