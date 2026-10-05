@@ -1,4 +1,4 @@
-# Pocketful — stage 3
+# Pocketful — stage 4
 
 HTTP service and web UI for payments, requests, splits, the activity feed, atomic net
 settlements and payment authorizations (holds and captures). Node.js 22, no third-party dependencies, all state in memory.
@@ -6,8 +6,8 @@ settlements and payment authorizations (holds and captures). Node.js 22, no thir
 ## Build and start
 
 ```sh
-docker build -t pocketful-stage-3 stage-3
-docker run --rm -p 8080:8080 -e PORT=8080 pocketful-stage-3
+docker build -t pocketful-stage-4 stage-4
+docker run --rm -p 8080:8080 -e PORT=8080 pocketful-stage-4
 ```
 
 The service listens on `0.0.0.0:$PORT` (default `8080`) and needs no outbound
@@ -22,10 +22,10 @@ Seed it with `POST /_test/reset` (fixture body), then sign in with
 Unit tests (run on the host, Node.js 22+; they start the server in-process):
 
 ```sh
-cd stage-3 && node --test test/*.test.js
+cd stage-4 && node --test test/*.test.js
 ```
 
-The tester's black-box suite lives in `stage-3/acceptance/` (see its README).
+The tester's black-box suite lives in `stage-4/acceptance/` (see its README).
 
 ## Web UI
 
@@ -56,3 +56,18 @@ a stage-1 export (schema version 1).
   insufficient_funds (vs available) -> 409 historical_overdraft.
 - DECISION S3-D6 Exports are `schema_version` 3 (revisions, openings, hold histories, closed_at); versions 1 and 2 import
   with revision 1 synthesized from `created_at` and openings derived. Recorded times per payment strictly increase (+1 ms bump).
+
+## Stage 4 decisions
+
+- DECISION S4-D1 Refund = new payment (receiver -> sender, `refund_of` = target, note/visibility copied, `request_id` and
+  `authorization_id` null). Error order: body 400, 401, key 400, replay/reuse, amount 422, 404, 403 non-receiver, 422
+  invalid_refund_target, 422 refund_exceeds_payment (cumulative vs the CURRENT corrected amount), 409 insufficient_funds
+  (receiver's available), 201. Refunds never touch requests, authorizations or settlement membership.
+- DECISION S4-D2 Single correction: after stale_revision, an amount below the refunded total is 422 refund_exceeds_payment,
+  then insufficient_funds (against available), then historical_overdraft. Captures and refunds are linked_payment_immutable.
+- DECISION S4-D3 `POST /correction-batches` (settlement operator, key): 1..32 objects with distinct string payment_ids; per
+  item in input order: fields 422, 404, linked_payment_immutable, stale_revision, refund_exceeds_payment; then
+  incomplete_settlement; then differing member effective instants (compared as instants) 422; then combined net current
+  funds vs available (409); then historical total/available at every boundary (409). All revisions share one recorded_at
+  (strictly after every member's previous one) and carry `correction_batch_id` (`cb_<n>`). Everything is judged on a draft.
+- DECISION S4-D4 Export is schema_version 4 (adds `refund_of`, `counters.cb`, revision `correction_batch_id`); versions 1-4 import.

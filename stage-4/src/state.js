@@ -5,7 +5,7 @@
 const { COST_LADDER } = require('./hash');
 
 const SCHEMA = 'pocketful-state';
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const MAX_TTL = 1e10;               // seconds; keeps expires_at inside the D40 time range
 const MAX_BALANCE = 2 ** 53;
 const MAX_AMOUNT = 1000000000;
@@ -26,7 +26,7 @@ class State {
     this.currency = currency;
     this.minor_units = minorUnits;
     this.clock = 0;
-    this.counters = { u: 0, p: 0, rq: 0, sp: 0, st: 0, au: 0, seq: 0 };
+    this.counters = { u: 0, p: 0, rq: 0, sp: 0, st: 0, au: 0, cb: 0, seq: 0 };
     this.users = new Map();      // id -> user
     this.byHandle = new Map();   // handle -> user
     this.byEmail = new Map();    // lower(email) -> user
@@ -45,6 +45,7 @@ class State {
     this.openAuths = new Map();  // id -> auth whose stored status is 'open'
     this.userPayments = new Map(); // user id -> payments they sent or received (creation order)
     this.userAuths = new Map();    // payer user id -> their authorizations
+    this.refunded = new Map();     // target payment id -> cumulative refunded amount (S4)
     this.snapshots = new Map();    // token -> frozen statement (S3); dies with the state at reset
   }
 
@@ -78,6 +79,8 @@ class State {
   }
 
   addPayment(p) {
+    if (p.refund_of === undefined) p.refund_of = null;
+    if (p.refund_of !== null) this.refunded.set(p.refund_of, (this.refunded.get(p.refund_of) || 0) + p.amount);
     if (!p.revisions) p.revisions = [{ revision: 1, amount: p.amount, effective_at: p.created_at, recorded_at: p.created_at, reason: '' }];
     this.payments.push(p);
     this.paymentById.set(p.payment_id, p);
@@ -366,12 +369,13 @@ function stateFromExport(st) {
   need(st.schema === SCHEMA, 'schema');
   need(isInt(st.schema_version) && (st.schema_version >= 1 && st.schema_version <= SCHEMA_VERSION), 'schema_version');
   const v2 = st.schema_version >= 2; // D34: version 1 is upgraded (no authorizations, ttl 600)
-  const v3 = st.schema_version === 3; // S3: revisions, openings, hold histories
+  const v4 = st.schema_version === 4;
+  const v3 = st.schema_version >= 3; // S3: revisions, openings, hold histories
   need(isStr(st.currency) && st.currency.length > 0, 'currency');
   need([0, 2, 3].includes(st.minor_units), 'minor_units');
   need(isInt(st.clock) && st.clock >= 0 && st.clock <= MAX_TIME, 'clock');
   need(isObj(st.counters), 'counters');
-  for (const k of v2 ? ['u', 'p', 'rq', 'sp', 'st', 'au', 'seq'] : ['u', 'p', 'rq', 'sp', 'st', 'seq']) {
+  for (const k of v4 ? ['u', 'p', 'rq', 'sp', 'st', 'au', 'cb', 'seq'] : v2 ? ['u', 'p', 'rq', 'sp', 'st', 'au', 'seq'] : ['u', 'p', 'rq', 'sp', 'st', 'seq']) {
     need(isInt(st.counters[k]) && st.counters[k] >= 0 && st.counters[k] <= MAX_COUNTER, 'counter');
   }
   if (v2) {
@@ -383,7 +387,7 @@ function stateFromExport(st) {
   }
   const s = new State(st.currency, st.minor_units);
   s.clock = st.clock;
-  s.counters = { u: st.counters.u, p: st.counters.p, rq: st.counters.rq, sp: st.counters.sp, st: st.counters.st, au: v2 ? st.counters.au : 0, seq: st.counters.seq };
+  s.counters = { u: st.counters.u, p: st.counters.p, rq: st.counters.rq, sp: st.counters.sp, st: st.counters.st, au: v2 ? st.counters.au : 0, cb: v4 ? st.counters.cb : 0, seq: st.counters.seq };
   if (v2) s.ttl = st.authorization_ttl_seconds;
   const isTime = (v) => isInt(v) && v >= 0 && v <= s.clock;
   const isSeq = (v) => isInt(v) && v >= 0 && v <= s.counters.seq;
@@ -420,6 +424,7 @@ function stateFromExport(st) {
     need(p.request_id === null || isId(p.request_id), 'payment request');
     need(p.settlement_id === null || isId(p.settlement_id), 'payment settlement');
     need(!v2 || p.authorization_id === null || isId(p.authorization_id), 'payment authorization');
+    need(!v4 || p.refund_of === null || isId(p.refund_of), 'payment refund_of');
     need(isTime(p.created_at) && isSeq(p.seq), 'payment time');
     let revisions;
     if (v3) {
@@ -431,14 +436,14 @@ function stateFromExport(st) {
           && isInt(r.recorded_at) && r.recorded_at >= 0 && r.recorded_at <= MAX_TIME && isStr(r.reason)
           && (prev === null || r.recorded_at > prev), 'payment revision');
         prev = r.recorded_at;
-        return { revision: r.revision, amount: r.amount, effective_at: r.effective_at, recorded_at: r.recorded_at, reason: r.reason };
+        return { revision: r.revision, amount: r.amount, effective_at: r.effective_at, recorded_at: r.recorded_at, reason: r.reason, ...(v4 && r.correction_batch_id ? { correction_batch_id: r.correction_batch_id } : {}) };
       });
       s.clock = Math.max(s.clock, prev);
     }
     s.addPayment({
       payment_id: p.payment_id, from_user_id: p.from_user_id, to_user_id: p.to_user_id, amount: p.amount,
       note: p.note, visibility: p.visibility, request_id: p.request_id, settlement_id: p.settlement_id,
-      authorization_id: v2 ? p.authorization_id : null, created_at: p.created_at, seq: p.seq, revisions,
+      authorization_id: v2 ? p.authorization_id : null, refund_of: v4 ? p.refund_of : null, created_at: p.created_at, seq: p.seq, revisions,
     });
   }
   for (const r of st.requests) {
@@ -479,6 +484,7 @@ function stateFromExport(st) {
     });
   }
   for (const p of s.payments) need(p.settlement_id === null || s.settlements.has(p.settlement_id), 'payment settlement ref');
+  for (const p of s.payments) need(p.refund_of === null || s.paymentById.has(p.refund_of), 'payment refund ref');
   const reserved = new Map();
   for (const a of v2 ? st.authorizations : []) {
     need(isObj(a) && isId(a.authorization_id) && !s.authById.has(a.authorization_id), 'authorization id');
@@ -536,7 +542,7 @@ function boundedBody(v, depth) {
 }
 
 // The seven idempotent write paths (§7).
-const IDEM_PATH = /^\/(payments|requests|splits|settlements|authorizations|requests\/[^/]+\/pay|authorizations\/[^/]+\/capture|payments\/[^/]+\/corrections)$/;
+const IDEM_PATH = /^\/(payments|requests|splits|settlements|authorizations|requests\/[^/]+\/pay|authorizations\/[^/]+\/capture|payments\/[^/]+\/corrections|payments\/[^/]+\/refunds|correction-batches)$/;
 
 function idemScope(userId, method, path, key) {
   return JSON.stringify([userId, method, path, key]);

@@ -146,7 +146,7 @@ test('S3 historical holds, closed_at, export v3 round trip, v2 import', async ()
   assert.equal(far.held, 0);
   const snap = (await get(w.ada, '/statement')).snapshot;
   const exp = (await t.call('GET', '/_test/export')).body;
-  assert.equal(exp.state.schema_version, 3);
+  assert.equal(exp.state.schema_version, 4);
   assert.equal((await t.call('POST', '/_test/import', { body: exp })).status, 204);
   assert.deepEqual((await t.call('GET', '/_test/export')).body, exp);
   assert.equal((await get(w.ada, `/me?as_of=${encodeURIComponent(mid)}`)).held, 1000);

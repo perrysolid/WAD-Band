@@ -76,6 +76,7 @@ function createApp({ log = defaultLog } = {}) {
       request_id: p.request_id,
       settlement_id: p.settlement_id,
       authorization_id: p.authorization_id,
+      refund_of: p.refund_of === undefined ? null : p.refund_of,
       created_at: iso(p.created_at),
     };
   }
@@ -587,29 +588,35 @@ function createApp({ log = defaultLog } = {}) {
     return { payment_id: p.payment_id, revision: r.revision, amount: r.amount, effective_at: iso(r.effective_at), recorded_at: iso(r.recorded_at), reason: r.reason };
   }
 
+  function correctionFields(s, b) {
+    stringType(b, 'effective_at'); stringType(b, 'reason');
+    if (!Object.hasOwn(b, 'expected_revision')) invalid('expected_revision is required');
+    const expected = exactInteger(b.expected_revision, 2 ** 53);
+    if (expected === null || expected < 1) invalid('expected_revision must be a positive integer');
+    if (!Object.hasOwn(b, 'amount')) invalid('amount is required');
+    const amount = exactInteger(b.amount, MAX_AMOUNT);
+    if (amount === null || amount < 0) invalid('amount must be an integer from 0 to 1000000000');
+    const eff = parseInstant(requireString(b, 'effective_at'));
+    if (eff === null) invalid('effective_at must be an RFC 3339 instant with an offset');
+    const now = s.now();
+    if (eff > now) invalid('effective_at is in the future');
+    const reason = requireString(b, 'reason');
+    const rl = codePoints(reason);
+    if (rl < 1 || rl > 200) invalid('reason must be 1 to 200 characters');
+    return { expected, amount, eff, reason, now };
+  }
+
   function correctPayment(ctx) {
     return idempotent(ctx, (s) => {
       const b = ctx.body; const caller = ctx.user;
-      stringType(b, 'effective_at'); stringType(b, 'reason');
-      if (!Object.hasOwn(b, 'expected_revision')) invalid('expected_revision is required');
-      const expected = exactInteger(b.expected_revision, 2 ** 53);
-      if (expected === null || expected < 1) invalid('expected_revision must be a positive integer');
-      if (!Object.hasOwn(b, 'amount')) invalid('amount is required');
-      const amount = exactInteger(b.amount, MAX_AMOUNT);
-      if (amount === null || amount < 0) invalid('amount must be an integer from 0 to 1000000000');
-      const eff = parseInstant(requireString(b, 'effective_at'));
-      if (eff === null) invalid('effective_at must be an RFC 3339 instant with an offset');
-      const now = s.now();
-      if (eff > now) invalid('effective_at is in the future');
-      const reason = requireString(b, 'reason');
-      const rl = codePoints(reason);
-      if (rl < 1 || rl > 200) invalid('reason must be 1 to 200 characters');
+      const { expected, amount, eff, reason, now } = correctionFields(s, b);
       const p = s.paymentById.get(ctx.params.id);
       if (!p) notFound('no such payment');
       if (p.from_user_id !== caller.id) fail(403, 'forbidden', 'only the sender may correct a payment');
-      if (p.settlement_id !== null || p.authorization_id !== null) fail(422, 'linked_payment_immutable', 'settlement members and captures cannot be corrected');
+      if (p.settlement_id !== null || p.authorization_id !== null || p.refund_of !== null) fail(422, 'linked_payment_immutable', 'settlement members, captures and refunds cannot be corrected');
       const cur = p.revisions[p.revisions.length - 1];
       if (expected !== cur.revision) fail(409, 'stale_revision', `current revision is ${cur.revision}`);
+      if (amount < (s.refunded.get(p.payment_id) || 0)) fail(422, 'refund_exceeds_payment', 'amount is below the already-refunded total');
       const delta = amount - cur.amount;
       const payer = p.from_user_id; const payee = p.to_user_id;
       const debit = delta > 0 ? payer : payee;
@@ -633,6 +640,101 @@ function createApp({ log = defaultLog } = {}) {
       p.revisions.push(rev);
       s.clock = Math.max(s.clock, rev.recorded_at);
       return revisionView(p, rev);
+    });
+  }
+
+  function refundPayment(ctx) {
+    return idempotent(ctx, (s) => {
+      const caller = ctx.user;
+      const amount = amountOf(ctx.body);
+      const p = s.paymentById.get(ctx.params.id);
+      if (!p) notFound('no such payment');
+      if (p.to_user_id !== caller.id) fail(403, 'forbidden', 'only the receiver may refund');
+      if (p.refund_of !== null) fail(422, 'invalid_refund_target', 'a refund cannot be refunded');
+      const cur = p.revisions[p.revisions.length - 1];
+      if ((s.refunded.get(p.payment_id) || 0) + amount > cur.amount) fail(422, 'refund_exceeds_payment', 'refunds would exceed the payment amount');
+      if (s.available(caller.id) < amount) fail(409, 'insufficient_funds', 'available balance is below amount');
+      creditFits(s, p.from_user_id, amount);
+      const t = s.now();
+      const r = {
+        payment_id: s.newId('p', s.paymentById), from_user_id: caller.id, to_user_id: p.from_user_id, amount, note: p.note,
+        visibility: p.visibility, request_id: null, settlement_id: null, authorization_id: null, refund_of: p.payment_id,
+        created_at: t, seq: s.nextSeq(),
+      };
+      const view = paymentView(s, r);
+      s.applyTransfers([{ from: caller.id, to: p.from_user_id, amount }]);
+      s.addPayment(r);
+      return view;
+    });
+  }
+
+  function correctionBatch(ctx) {
+    return idempotent(ctx, (s) => {
+      const items = ctx.body.corrections;
+      if (!Array.isArray(items) || items.length < 1 || items.length > 32) invalid('corrections must hold 1 to 32 entries');
+      const seen = new Set();
+      for (const [i, it] of items.entries()) {
+        if (!isObject(it) || typeof it.payment_id !== 'string') invalid(`corrections[${i}] is malformed`);
+        if (seen.has(it.payment_id)) invalid('payment_id repeats in corrections');
+        seen.add(it.payment_id);
+      }
+      const plan = [];
+      for (const it of items) {
+        const f = correctionFields(s, it);
+        const p = s.paymentById.get(it.payment_id);
+        if (!p) notFound(`no such payment ${it.payment_id}`);
+        if (p.authorization_id !== null || p.refund_of !== null) fail(422, 'linked_payment_immutable', 'captures and refunds cannot be corrected');
+        const cur = p.revisions[p.revisions.length - 1];
+        if (f.expected !== cur.revision) fail(409, 'stale_revision', `current revision of ${p.payment_id} is ${cur.revision}`);
+        if (f.amount < (s.refunded.get(p.payment_id) || 0)) fail(422, 'refund_exceeds_payment', 'amount is below the already-refunded total');
+        plan.push({ p, cur, ...f });
+      }
+      const bySettlement = new Map();
+      for (const e of plan) if (e.p.settlement_id !== null) {
+        if (!bySettlement.has(e.p.settlement_id)) bySettlement.set(e.p.settlement_id, []);
+        bySettlement.get(e.p.settlement_id).push(e);
+      }
+      for (const [sid, es] of bySettlement) {
+        const ids = new Set(es.map((e) => e.p.payment_id));
+        if (!s.settlements.get(sid).payment_ids.every((id) => ids.has(id))) fail(422, 'incomplete_settlement', 'every member of a settlement must be corrected together');
+      }
+      for (const es of bySettlement.values()) {
+        if (es.some((e) => e.eff !== es[0].eff)) invalid('members of one settlement need identical effective instants');
+      }
+      const net = new Map();
+      for (const e of plan) {
+        const d = e.amount - e.cur.amount;
+        net.set(e.p.to_user_id, (net.get(e.p.to_user_id) || 0) + d);
+        net.set(e.p.from_user_id, (net.get(e.p.from_user_id) || 0) - d);
+      }
+      for (const [id, d] of net) if (d < 0 && s.available(id) < -d) fail(409, 'insufficient_funds', 'the combined debit is not affordable');
+      for (const [id, d] of net) if (d > 0) creditFits(s, id, d);
+      const now = s.now();
+      const recorded = Math.max(now, ...plan.map((e) => e.cur.recorded_at + 1));
+      if (recorded > MAX_TIME) throw new InvariantError('invariant: clock beyond 9999-12-31');
+      const batchId = s.newId('cb', new Set());
+      const revs = plan.map((e) => ({
+        revision: e.cur.revision + 1, amount: e.amount, effective_at: e.eff, recorded_at: recorded, reason: e.reason, correction_batch_id: batchId,
+      }));
+      plan.forEach((e, i) => e.p.revisions.push(revs[i]));
+      let bad;
+      try {
+        bad = [...new Set(plan.flatMap((e) => [e.p.from_user_id, e.p.to_user_id]))].some((id) => H.overdrawn(s, id, now));
+      } finally { plan.forEach((e) => e.p.revisions.pop()); }
+      if (bad) fail(409, 'historical_overdraft', 'the batch would overdraw a wallet at a past instant');
+      const transfers = [];
+      for (const e of plan) {
+        const d = e.amount - e.cur.amount;
+        if (d > 0) transfers.push({ from: e.p.from_user_id, to: e.p.to_user_id, amount: d });
+        else if (d < 0) transfers.push({ from: e.p.to_user_id, to: e.p.from_user_id, amount: -d });
+      }
+      s.applyTransfers(transfers);
+      plan.forEach((e, i) => e.p.revisions.push(revs[i]));
+      s.clock = Math.max(s.clock, recorded);
+      return {
+        correction_batch_id: batchId, recorded_at: iso(recorded),
+        revisions: plan.map((e, i) => ({ ...revisionView(e.p, revs[i]), correction_batch_id: batchId })),
+      };
     });
   }
 
@@ -776,6 +878,8 @@ function createApp({ log = defaultLog } = {}) {
     { method: 'POST', path: /^\/authorizations\/([^/]+)\/void$/, auth: true, fn: voidAuthorization },
     { method: 'GET', path: '/statement', auth: true, fn: statement },
     { method: 'POST', path: /^\/payments\/([^/]+)\/corrections$/, body: 'api', auth: true, fn: correctPayment },
+    { method: 'POST', path: /^\/payments\/([^/]+)\/refunds$/, body: 'api', auth: true, fn: refundPayment },
+    { method: 'POST', path: '/correction-batches', body: 'api', auth: true, operator: true, fn: correctionBatch },
     { method: 'GET', path: /^\/payments\/([^/]+)\/revisions$/, auth: true, fn: listRevisions },
     { method: 'POST', path: '/settlements', body: 'api', auth: true, operator: true, fn: createSettlement },
   ];

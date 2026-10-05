@@ -185,10 +185,9 @@ test('D14 seeded scrypt cost scales down with the number of distinct passwords',
 // Stage 2 amends R35: /, /authorizations, /me totals and authorization_id now exist (D26); stages 3-4 stay absent.
 test('R35 R36 unknown routes and stage 3/4 surfaces are 404', async () => {
   const w = await t.world();
-  for (const [m, p] of [['POST', '/payments/p_1/refunds'],
-    ['POST', '/correction-batches'], ['GET', '/payments'], ['DELETE', '/me'], ['PUT', '/requests'], ['GET', '/requests/x']]) {
+  for (const [m, p] of [['GET', '/payments'], ['DELETE', '/me'], ['PUT', '/requests'], ['GET', '/requests/x']]) {
     expectError(assert, await t.call(m, p, { token: w.ada }), 404, 'not_found');
   }
   const p = await t.pay(w.ada, 'bob', 1);
-  for (const k of ['refund_of', 'closed_at', 'effective_at', 'revision']) assert.ok(!(k in p.body));
+  for (const k of ['closed_at', 'effective_at', 'revision', 'correction_batch_id']) assert.ok(!(k in p.body));
 });

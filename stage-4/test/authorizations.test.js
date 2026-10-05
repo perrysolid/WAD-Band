@@ -208,7 +208,7 @@ test('S2-R13/D34 export is schema 2 and round-trips; stage-1 exports upgrade', a
   await authorize(w.cy, 'bob', 10, {}, key);
   const exp = (await t.call('GET', '/_test/export')).body;
   assert.equal(exp.format_version, 1);
-  assert.equal(exp.state.schema_version, 3);
+  assert.equal(exp.state.schema_version, 4);
   assert.equal(exp.state.authorization_ttl_seconds, 90);
   assert.equal((await t.call('POST', '/_test/import', { body: exp })).status, 204);
   assert.deepEqual((await t.call('GET', '/_test/export')).body, exp);
@@ -223,11 +223,11 @@ test('S2-R13/D34 export is schema 2 and round-trips; stage-1 exports upgrade', a
   v1.state.idempotency = v1.state.idempotency.filter((r) => r.path === '/payments');
   assert.equal((await t.call('POST', '/_test/import', { body: v1 })).status, 204);
   const up = (await t.call('GET', '/_test/export')).body;
-  assert.equal(up.state.schema_version, 3);
+  assert.equal(up.state.schema_version, 4);
   assert.equal(up.state.authorization_ttl_seconds, 600);
   assert.ok(up.state.payments.every((p) => p.authorization_id === null));
   assert.equal((await me(w.ada)).held, 0);
-  const v3 = JSON.parse(JSON.stringify(exp)); v3.state.schema_version = 4;
+  const v3 = JSON.parse(JSON.stringify(exp)); v3.state.schema_version = 5;
   expectError(assert, await t.call('POST', '/_test/import', { body: v3 }), 422, 'validation_failed');
   const bad = JSON.parse(JSON.stringify(exp)); bad.state.authorizations[0].captured_amount = 10 ** 9;
   expectError(assert, await t.call('POST', '/_test/import', { body: bad }), 422, 'validation_failed');
