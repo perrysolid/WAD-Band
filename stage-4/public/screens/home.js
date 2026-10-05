@@ -5,6 +5,7 @@ import { moneyForm } from '../lib/form.js';
 import { walletPanel } from '../lib/wallet.js';
 import { session, refreshMe, onMe } from '../lib/session.js';
 import { avatar, privacyBadge, timeEl } from '../lib/ui.js';
+import { stashPrefill, takePrefill, PREFILL_EVENT } from '../lib/prefill.js';
 
 export const VISIBILITY = [['public', 'Public: anyone can see it in the feed'], ['private', 'Private: only you and the other person']];
 
@@ -70,7 +71,11 @@ function feedItem(p, me) {
     h('p', { class: 'item-note', testid: `activity-note-${id}`, text: p.note }),
     h('div', { class: 'item-meta' },
       privacyBadge(p.visibility),
-      timeEl(p.created_at)));
+      timeEl(p.created_at)),
+    sent && h('div', { class: 'item-actions' }, h('button', { type: 'button', class: 'btn btn-quiet btn-small', testid: `activity-pay-again-${id}`, text: 'Pay again',
+      onclick: () => { stashPrefill('pay', p, me); window.dispatchEvent(new Event(PREFILL_EVENT)); } })),
+    p.to_user_id === me.user_id && h('div', { class: 'item-actions' }, h('button', { type: 'button', class: 'btn btn-quiet btn-small', testid: `activity-request-again-${id}`, text: 'Request again',
+      onclick: () => { stashPrefill('request', p, me); window.dispatchEvent(new Event(PREFILL_EVENT)); } })));
 }
 
 export function home() {
@@ -134,14 +139,32 @@ export function home() {
   const hold = holdForm({ onDone: afterMoney });
 
   // Narrow screens show one form at a time (pay first); every form stays in the DOM. Wide screens show all.
+  const selectTab = (k) => {
+    tabs.parentElement.dataset.active = k;
+    tabBtns.forEach((b) => b.setAttribute('aria-selected', String(b.id === `tab-${k}`)));
+  };
   const tabBtns = [['pay', 'Pay'], ['request', 'Request'], ['authorize', 'Hold']].map(([k, label]) => h('button', {
     type: 'button', role: 'tab', class: 'tab', id: `tab-${k}`, 'aria-selected': k === 'pay' ? 'true' : 'false', text: label,
-    onclick: () => {
-      tabs.parentElement.dataset.active = k;
-      tabBtns.forEach((b) => b.setAttribute('aria-selected', String(b === tabBtns.find((x) => x.id === `tab-${k}`))));
-    },
+    onclick: () => selectTab(k),
   }));
   const tabs = h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Choose an action' }, tabBtns);
+
+  // Fill (never submit) a form from a "Pay again" / "Request again" action, then focus it.
+  function applyPrefill() {
+    const pf = takePrefill();
+    if (!pf) return;
+    const form = pf.kind === 'request' ? ask : pay;
+    form.controls.handle.value = pf.handle;
+    form.controls.amount.value = pf.amount;
+    form.controls.note.value = pf.note;
+    if (pf.kind !== 'request' && form.controls.visibility) form.controls.visibility.value = pf.visibility;
+    for (const c of Object.values(form.controls)) c.dispatchEvent(new Event('input', { bubbles: true }));
+    selectTab(pf.kind === 'request' ? 'request' : 'pay');
+    form.el.scrollIntoView({ block: 'center' });
+    form.controls.amount.focus();
+  }
+  window.addEventListener(PREFILL_EVENT, applyPrefill);
+  setTimeout(applyPrefill, 0); // after the screen is attached (arrived from a payment page)
 
   refreshActivity(); // the shell loads `me`
   const nodes = [

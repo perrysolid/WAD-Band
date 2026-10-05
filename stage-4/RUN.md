@@ -102,3 +102,12 @@ Correct form (sender of an ordinary payment; not settlement members, captures or
 `-effective_at` (datetime-local, default now), `-reason`, `-submit`, `-error`, `-uncertain`, `-success`. The body sent is
 `{expected_revision, amount, effective_at (RFC 3339 + offset), reason}`; the expected revision is the latest one loaded.
 Both forms reuse their Idempotency-Key while the body is unchanged and mint a new one on any change.
+
+## Quick actions and split explanation — test ids
+
+- `activity-pay-again-{id}` (feed item you sent) and `activity-request-again-{id}` (feed item you received); on the payment page `payment-detail-pay-again`
+  and `payment-detail-request-again`. They fill the Pay / Request form on the home screen (counterparty handle, amount as typed decimal, note; Pay also the
+  visibility), switch to that tab on narrow screens, scroll to it and focus the amount field. Nothing is submitted. From a payment page the browser first
+  goes to `/` (prefill carried in sessionStorage).
+- Split preview: `split-extra-note` explains who carries the extra minor units. The server rule (stage-1 §9) gives them to the first
+  `amount mod n` participants in `participant_handles` order (not sorted); the text says so and names those handles. `split-share-{handle}` is unchanged.

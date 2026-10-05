@@ -8,6 +8,7 @@ import { session, refreshMe, onMe } from '../lib/session.js';
 import { localToRfc3339 } from '../lib/instants.js';
 import { avatar, privacyBadge, timeEl } from '../lib/ui.js';
 import { sentence } from './home.js';
+import { stashPrefill } from '../lib/prefill.js';
 
 const ZERO = /^\s*0+(\.0+)?\s*$/;
 
@@ -154,6 +155,9 @@ export function payment(id) {
       h('section', { 'aria-labelledby': 'payment-detail-history' },
         h('div', { class: 'section-title' }, h('h2', { id: 'payment-detail-history', text: 'History of this payment' })),
         h('ul', { class: 'list', testid: 'payment-detail-revisions' }, revisions.map((r) => revisionRow(r, me)))),
+      h('div', { class: 'item-actions' },
+        sent && h('button', { type: 'button', class: 'btn btn-quiet btn-small', testid: 'payment-detail-pay-again', text: 'Pay again', onclick: () => { stashPrefill('pay', pay, me); location.assign('/'); } }),
+        pay.to_user_id === me.user_id && h('button', { type: 'button', class: 'btn btn-quiet btn-small', testid: 'payment-detail-request-again', text: 'Request again', onclick: () => { stashPrefill('request', pay, me); location.assign('/'); } })),
       forms.refund && forms.refund.el,
       forms.correct && forms.correct.el,
       !forms.refund && !forms.correct && h('p', { class: 'fineprint', testid: 'payment-detail-no-actions', text: pay.refund_of || pay.authorization_id || pay.settlement_id ? 'This payment cannot be refunded or corrected from here.' : 'Only the person who received this payment can refund it, and only the sender can correct it.' }));
