@@ -443,9 +443,19 @@ function stateFromExport(st) {
       && isObj(r.body), 'idempotency');
     const k = idemScope(r.user_id, r.method, r.path, r.key);
     need(!s.idem.has(k), 'idempotency duplicate');
+    need(boundedBody(r.body, 0), 'idempotency body'); // D40: replays serve this body, so its numbers must be sane
     s.idem.set(k, { user_id: r.user_id, method: r.method, path: r.path, key: r.key, canon: r.canon, status: r.status, body: r.body });
   }
   return s;
+}
+
+// Every number in a recorded response is a non-negative integer within [0, 2^53].
+function boundedBody(v, depth) {
+  if (depth > 8) return false;
+  if (typeof v === 'number') return Number.isSafeInteger(v) ? v >= 0 : v === MAX_BALANCE;
+  if (Array.isArray(v)) return v.every((x) => boundedBody(x, depth + 1));
+  if (isObj(v)) return Object.values(v).every((x) => boundedBody(x, depth + 1));
+  return true;
 }
 
 // The seven idempotent write paths (§7).

@@ -244,3 +244,16 @@ test('D39 capture credit above 2^53 is 422, hold stays open, key unclaimed', asy
   assert.equal((await capture(w.bob, a, { amount: 5 }, key)).status, 201);
   assert.equal((await me(w.bob)).total, big);
 });
+
+test('D40 import validates numbers inside recorded idempotency responses', async () => {
+  const w = await t.world();
+  await authorize(w.ada, 'bob', 777);
+  const exp = (await t.call('GET', '/_test/export')).body;
+  for (const v of [2 ** 53 + 2, 2 ** 60, 1e20, -1, 1.5]) {
+    const bad = JSON.parse(JSON.stringify(exp));
+    bad.state.idempotency[0].body.amount = v;
+    expectError(assert, await t.call('POST', '/_test/import', { body: bad }), 422, 'validation_failed');
+  }
+  assert.deepEqual((await t.call('GET', '/_test/export')).body, exp);
+  assert.equal((await t.call('POST', '/_test/import', { body: exp })).status, 204);
+});
