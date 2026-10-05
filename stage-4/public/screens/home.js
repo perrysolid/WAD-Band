@@ -51,7 +51,7 @@ export function sentence(p, meId) {
   const sent = p.from_user_id === meId; const got = p.to_user_id === meId;
   const from = `@${p.from_handle}`; const to = `@${p.to_handle}`;
   if (p.refund_of) return sent ? `You refunded ${to}` : got ? `${from} refunded you` : `${from} refunded ${to}`;
-  if (p.authorization_id) return sent ? `${to} collected a held payment from you` : got ? `You collected a held payment from ${from}` : `${to} collected a held payment from ${from}`;
+  if (p.authorization_id) return sent ? `${to} collected from your hold` : got ? `You collected from ${from}'s hold` : `${to} collected from ${from}'s hold`;
   if (p.request_id) return sent ? `You paid ${to}'s request` : got ? `${from} paid your request` : `${from} paid ${to}'s request`;
   if (p.settlement_id) return sent ? `You settled with ${to}` : got ? `${from} settled with you` : `${from} settled with ${to}`;
   return sent ? `You paid ${to}` : got ? `${from} paid you` : `${from} paid ${to}`;

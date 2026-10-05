@@ -42,7 +42,7 @@ export function moneyForm(cfg) {
     clear(status);
     if (kind === 'error') status.append(h('p', { class: 'msg msg-error', role: 'alert', testid: `${prefix}-error`, text }));
     else if (kind === 'uncertain') status.append(h('p', { class: 'msg msg-uncertain', role: 'status', testid: `${prefix}-uncertain` }, h('strong', { text: 'Outcome unknown' }), text));
-    else if (kind === 'ok') status.append(h('p', { class: 'msg msg-ok', role: 'status', testid: `${prefix}-success`, text }));
+    else if (kind === 'ok') status.append(h('p', { class: 'msg msg-ok', testid: `${prefix}-success`, text }));
   }
 
   async function onSubmit(e) {
