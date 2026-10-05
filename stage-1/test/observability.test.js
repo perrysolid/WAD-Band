@@ -156,3 +156,26 @@ test('W1-F a client that disconnects mid-body yields exactly one log line, with 
   assert.equal(lines[0].path, '/payments');
   assert.equal(lines[0].status, null);
 });
+
+test('W1-F a dispatched request followed by pipelined garbage: the request is answered and logged once, the garbage gets its own 400', async () => {
+  const before = out.length;
+  const text = await new Promise((resolve) => {
+    const s = net.connect(new URL(t.base).port, '127.0.0.1');
+    let data = '';
+    s.on('data', (c) => { data += c; });
+    s.on('error', () => {});
+    s.on('close', () => resolve(data));
+    s.write('GET /health HTTP/1.1\r\nHost: x\r\n\r\nGARBAGE\r\n\r\n');
+    setTimeout(() => s.destroy(), 1000);
+  });
+  await settle();
+  const lines = out.slice(before).map((l) => JSON.parse(l));
+  const health = lines.filter((l) => l.path === '/health');
+  assert.equal(health.length, 1, JSON.stringify(lines));
+  assert.equal(health[0].status, 200);
+  assert.match(text, /^HTTP\/1\.1 200 /);
+  assert.match(text, /HTTP\/1\.1 400 Bad Request/);
+  const garbage = lines.filter((l) => l.path === null);
+  assert.equal(garbage.length, 1, JSON.stringify(lines));
+  assert.equal(garbage[0].status, 400);
+});

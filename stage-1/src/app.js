@@ -607,8 +607,10 @@ function createApp({ log = defaultLog } = {}) {
     const ctx = {
       req, path: String(req.url).split('?')[0], params: {}, query: null, body: null, user: null, idem: 'none',
     };
-    res.on('finish', () => accessLog(ctx, res, started));
-    res.on('close', () => { if (!res.writableFinished) accessLog(ctx, res, started); });
+    let logged = false; // exactly one line per request, whichever of finish/close comes first
+    const once = () => { if (!logged) { logged = true; accessLog(ctx, res, started); } };
+    res.on('finish', once);
+    res.on('close', once);
     try {
       const url = new URL(req.url, 'http://localhost');
       const path = url.pathname;
@@ -645,21 +647,32 @@ function createApp({ log = defaultLog } = {}) {
 function createServer(opts = {}) {
   const log = opts.log || defaultLog;
   const app = createApp({ log });
-  const busy = new WeakSet(); // sockets with a request being handled
+  const busy = new WeakMap(); // socket -> response still being produced on it
   const server = http.createServer({ maxHeaderSize: 1 << 20, keepAliveTimeout: 30000 }, (req, res) => {
     const { socket } = req;
-    busy.add(socket);
-    res.on('close', () => busy.delete(socket));
+    busy.set(socket, res);
+    res.on('close', () => { if (busy.get(socket) === res) busy.delete(socket); });
     app.handle(req, res);
   });
   server.on('clientError', (err, socket) => {
-    // A reset, or a parser error on a socket whose request is already being handled,
-    // is that request's ending: its own access line covers it (W1-X: one line per request).
-    if (err.code === 'ECONNRESET' || busy.has(socket)) {
+    // A reset, or the peer closing mid-message, ends whatever request is in flight;
+    // that request's own access line covers it and there is nobody to answer.
+    if (err.code === 'ECONNRESET' || err.code === 'HPE_INVALID_EOF_STATE') {
       socket.destroy();
       return;
     }
-    if (socket.writable) {
+    // A parser error behind a request still being answered (pipelining, or an aborted
+    // body) waits for that response; if the socket is still usable it then gets its own 400.
+    const inflight = busy.get(socket);
+    if (inflight) {
+      inflight.once('close', () => setImmediate(() => rejectMalformed(socket)));
+      return;
+    }
+    rejectMalformed(socket);
+  });
+
+  function rejectMalformed(socket) {
+    if (socket.writable && !socket.destroyed) {
       const requestId = newRequestId();
       const data = JSON.stringify({ error: { code: 'malformed_request', message: 'bad HTTP request' } });
       socket.end(`HTTP/1.1 400 Bad Request\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: ${Buffer.byteLength(data)}\r\nX-Request-Id: ${requestId}\r\nConnection: close\r\n\r\n${data}`);
@@ -669,7 +682,7 @@ function createServer(opts = {}) {
     } else {
       socket.destroy();
     }
-  });
+  }
   return { server, app };
 }
 
