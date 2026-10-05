@@ -10,12 +10,8 @@ function selectRev(p, K) {
   return null;
 }
 
-// Numeric-aware id order, so p_9 sorts before p_10.
-function idCmp(a, b) {
-  const ma = /^(.*?)(\d+)$/.exec(a); const mb = /^(.*?)(\d+)$/.exec(b);
-  if (ma && mb && ma[1] === mb[1]) return Number(ma[2]) - Number(mb[2]) || (a < b ? -1 : a > b ? 1 : 0);
-  return a < b ? -1 : a > b ? 1 : 0;
-}
+// Ids are opaque strings: ties break by plain string order.
+const idCmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
 // The caller's movements under knowledge K: [{p, rev, delta, t}] in (t, id) order.
 function moves(s, uid, K) {

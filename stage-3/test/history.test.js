@@ -159,3 +159,11 @@ test('S3 historical holds, closed_at, export v3 round trip, v2 import', async ()
   assert.equal((await t.call('POST', '/_test/import', { body: v2 })).status, 204);
   assert.equal((await get(w.ada, '/me')).balance, 10000);
 });
+
+test('S3 statement ties break by plain string id order', async () => {
+  const at = iso(Date.now() - 3600e3);
+  const payments = Array.from({ length: 11 }, (_, i) => ({ id: `p_${i + 1}`, from_user_id: 'u_ada', to_user_id: 'u_bob', amount: 1, created_at: at }));
+  const w = await t.world(fixture({ payments }));
+  const ids = (await get(w.ada, '/statement')).entries.map((e) => e.payment.payment_id);
+  assert.deepEqual(ids, [...ids].sort());
+});

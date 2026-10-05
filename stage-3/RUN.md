@@ -50,7 +50,7 @@ a stage-1 export (schema version 1).
   An open hold in a future query expires at its deadline. Events other than expiry are known at their time.
 - DECISION S3-D4 Statements are computed in full on first read and frozen as a snapshot (per user, cleared on reset);
   default `to` is unbounded (everything effective up to now, as no revision may be effective in the future).
-  Order is selected `effective_at`, then payment id (numeric-aware). Only limit/offset may accompany `snapshot`.
+  Order is selected `effective_at`, then payment id as a plain string (ids are opaque). Only limit/offset may accompany `snapshot`.
 - DECISION S3-D5 Correction error order: body 400 -> 401 -> key 400 -> replay/key reuse -> field 422 (expected_revision,
   amount, effective_at, reason) -> 404 -> 403 -> 422 linked_payment_immutable -> 409 stale_revision -> 409
   insufficient_funds (vs available) -> 409 historical_overdraft.
