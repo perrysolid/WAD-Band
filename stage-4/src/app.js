@@ -585,7 +585,7 @@ function createApp({ log = defaultLog } = {}) {
   // ---- corrections (S3) ------------------------------------------------------------------
 
   function revisionView(p, r) {
-    return { payment_id: p.payment_id, revision: r.revision, amount: r.amount, effective_at: iso(r.effective_at), recorded_at: iso(r.recorded_at), reason: r.reason };
+    return { payment_id: p.payment_id, revision: r.revision, amount: r.amount, effective_at: iso(r.effective_at), recorded_at: iso(r.recorded_at), reason: r.reason, ...(r.correction_batch_id ? { correction_batch_id: r.correction_batch_id } : {}) };
   }
 
   function correctionFields(s, b) {
@@ -733,7 +733,7 @@ function createApp({ log = defaultLog } = {}) {
       s.clock = Math.max(s.clock, recorded);
       return {
         correction_batch_id: batchId, recorded_at: iso(recorded),
-        revisions: plan.map((e, i) => ({ ...revisionView(e.p, revs[i]), correction_batch_id: batchId })),
+        revisions: plan.map((e, i) => revisionView(e.p, revs[i])),
       };
     });
   }

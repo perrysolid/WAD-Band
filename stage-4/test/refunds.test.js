@@ -68,6 +68,9 @@ test('S4 correction batches', async () => {
   assert.equal((await me(w.ada)).balance, before[0] + 150 - 10);
   const rep = await batch(w.ada, [item(m2), item(m1, { effective_at: s.committed_at.replace('+00:00', 'Z') }), item(direct, { amount: 20 })], key);
   assert.equal(rep.status, 200); assert.deepEqual(rep.body, ok.body);
+  const listed = (await t.call('GET', `/payments/${direct.payment_id}/revisions`, { token: w.ada })).body.revisions;
+  assert.equal(listed[1].correction_batch_id, ok.body.correction_batch_id);
+  assert.ok(!('correction_batch_id' in listed[0]));
   const single = await correct(w.ada, direct.payment_id, { expected_revision: 2, amount: 5, effective_at: direct.created_at, reason: 'x' });
   assert.ok(!('correction_batch_id' in single.body));
   // refund of a settlement member is allowed
