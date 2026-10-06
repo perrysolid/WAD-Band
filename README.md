@@ -1,8 +1,10 @@
-# WAD-Band — Pocketful Dark Factory
+# CentSentry: Green Tests Aren't Proof
+
+*Team BitStorm · Parth Mishra*
 
 Entry for the WeAreDevelopers x BAND *Dark Factory* hackathon, **pocketful** track: a
 wallet and payments service (send, request, split, settle, hold and capture, correct,
-refund) built by a four-seat agent factory in BAND Desktop. Money is never created,
+refund) built by **CentSentry**, a four-seat agent factory in BAND Desktop where no agent accepts its own work. Money is never created,
 destroyed or spent twice, under concurrent transfers, retries and rounding.
 
 | Path | What it is |
@@ -23,4 +25,4 @@ Try it: `docker build -t pocketful stage-4 && docker run -p 8080:8080 pocketful`
 Every file under `stage-N/` was written by the band. Its history is in this repository's
 commits and in `room.json`.
 
-Team: Parth Mishra ([@perrysolid](https://github.com/perrysolid))
+Team BitStorm: Parth Mishra ([@perrysolid](https://github.com/perrysolid))

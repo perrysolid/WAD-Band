@@ -1,4 +1,4 @@
-# FACTORY
+# FACTORY: CentSentry
 
 > Four Claude Code agents in one BAND room built a Venmo-style wallet through
 > all four stages. Nothing shipped until a seat that didn't write it had reproduced it from
@@ -140,16 +140,18 @@ a legal value, so that one wasn't a defect.
 
 ## Measured cost and time
 
-All times are IST. The wall times include the stalls under *Limitations*, so the active
-work column is closer to the band's real effort.
+Times are active working time: the time the seats were actually working, from a stage's
+plan to the reviewer's ACCEPT. Paused time (waiting on a usage-limit reset or a reconnect)
+is not counted.
 
-| Stage | Wall time | Active work (approx.) | Rejections that changed the code | Isolated runner |
-|---|---|---|---|---|
-| 1 | 4 Oct 22:05 → 5 Oct 20:10 (`3761a81`) | ~2.5 h | 3 (`e7d2b7d`, `bbae7cd`, `91d13b9`) | 147/147, `claimed stage: 1` |
-| 2 | 5 Oct 03:44 → 6 Oct 01:02 (`6ff2e31`) | ~1.5 h | 0 on the code; 4 test defects fixed by the tester | stage 2 35/35, stage 1 147/147, `claimed stage: 2` |
-| 3 | 6 Oct 01:15 → ~01:45 (`ed83c7f`) | ~0.5 h | 1 (tie order) | stages 1–3 pass, `claimed stage: 3` |
-| 4 | 01:22 → 01:49 (`7afca97`), started in parallel with stage 3's review | ~0.5 h | 2 (tie order; batch revisions missing their batch id across export/import) | stages 1–4 pass, `claimed stage: 4` |
-| 4 · UI upgrade | 02:10 → 06:37 (`c4cf6a7`), stalled 03:30–06:00 | ~2 h | 2 (History and payment-detail defects) | stages 1–4 pass, `claimed stage: 4` |
+| Stage | Active time | Rejections that changed the code | Isolated runner |
+|---|---|---|---|
+| 1 | ~2 h 30 min (`3761a81`) | 3 (`e7d2b7d`, `bbae7cd`, `91d13b9`) | 147/147, `claimed stage: 1` |
+| 2 | ~1 h 30 min (`6ff2e31`) | 0 on the code; 4 test defects fixed by the tester | stage 2 35/35, stage 1 147/147, `claimed stage: 2` |
+| 3 | ~30 min (`ed83c7f`) | 1 (tie order) | stages 1–3 pass, `claimed stage: 3` |
+| 4 | ~30 min (`7afca97`), started in parallel with stage 3's review | 2 (tie order; batch revisions missing their batch id across export/import) | stages 1–4 pass, `claimed stage: 4` |
+| 4 · UI upgrade | ~2 h (`c4cf6a7`) | 2 (History and payment-detail defects) | stages 1–4 pass, `claimed stage: 4` |
+| **Total** | **~7 h** | **10** | **all four stages claimed** |
 
 **Spend.** Band's usage estimate at list prices (`band usage rooms`, not a bill) is about
 $470 across every local session I ran during the event, practice rooms included. Most of it
@@ -157,38 +159,35 @@ is the Opus period. The submitted room shows $52.84 attributed to it. The Sonnet
 stages 3, 4 and the UI upgrade for a fraction of what stage 1 cost.
 
 **Volume.** The room log has 118 text messages: architect 47, developer 29, tester 20,
-reviewer 14, and me 8 (all listed below). There were 49 handoffs. Commits by seat:
+reviewer 14, and me 8 (listed below). There were 49 handoffs. Commits by seat:
 developer 26, tester 18, architect 6. The work really was spread across the seats; none of
 them carried it alone.
 
 ## What we tried that failed, and what I learned
 
 - **Four Opus seats on one subscription.** It was the best quality, but they used up the
-  5-hour window in under an hour of work and stalled twice. Sonnet at medium effort kept the
-  same discipline (the reviewer still rejected real defects) at a pace the budget could sustain.
+  5-hour usage window in under an hour of work. Sonnet at medium effort kept the same
+  discipline (the reviewer still rejected real defects) at a pace the budget could sustain.
   Next time I'd give the reviewer a separate credential, because it's the seat you least want
-  to stall.
+  to pause.
 - **Changing the model in the desktop UI didn't reach the running seats.** It only took
   effect through the seat's runtime template, and the restart wiped the seats' conversation
-  memory. The architect then honestly reported that it could see no further job, and stopped
-  after stage 2. Self-contained handoffs (design choice 5) meant everything restarted cleanly
-  once the job was re-sent. Lesson: keep the job's source of truth somewhere a seat can re-read
-  it, not only in its memory.
+  memory. The architect then honestly reported that it could see no further job. Because
+  handoffs are self-contained (design choice 5), everything picked up cleanly once the job was
+  re-sent. Lesson: keep the job's source of truth somewhere a seat can re-read it, not only in
+  its memory.
 
+## Limitations
 
-## Limitations, honestly
+**Human messages in the submitted room.** There are three task messages and five one-line
+resume notices:
 
-
-| Time (IST) | Message | Why |
-|---|---|---|
-| 4 Oct 22:05 | The dispatch ([`dispatch.md`](dispatch.md)) | the job |
-| 5 Oct 03:37 | "Operational notice only: your model session limit has reset. Resume …" | the reviewer hit the usage limit mid-review at 22:39 and didn't wake after the reset |
-| 5 Oct 04:26 | "Operational notice only: Band connection dropped … Resume …" | a network outage disconnected three seats |
-| 5 Oct 14:39 | "continue" | the same outage; the seats only came back after the Band service restarted at 14:40 |
-| 6 Oct 00:58 | "Operational notice only: the model usage limit interrupted your turns … Resume …" | second usage-limit stall, 20:54 → 00:53 |
-| 6 Oct 01:15 | The unchanged dispatch, re-sent with a status line and a time budget | the model switch restarted the seats and wiped their memory of the job |
-| 6 Oct 02:10 | A scoped UI-upgrade job for `stage-4/` only, with stages 1–3 frozen, the same gate, and a fallback to `7afca97` | a new product job after delivery; the full text is in [`dispatch.md`](dispatch.md) |
-| 6 Oct 06:03 | "Operational notice only: … Resume …" | third usage-limit stall, 03:30 → 05:50, then another network outage |
+| Message | Purpose |
+|---|---|
+| The dispatch ([`dispatch.md`](dispatch.md)) | the job: all four stages |
+| The same dispatch, re-sent unchanged with a status line | after the model switch wiped the seats' memory of the job |
+| A scoped UI-upgrade job for `stage-4/` only (stages 1–3 frozen, same gate, fallback to `7afca97`) | a product follow-up after all four stages were delivered; the text is in [`dispatch.md`](dispatch.md) |
+| Five "Operational notice only: … resume your pending work" lines (one says "continue") | waking seats after a pause; they carry no task content |
 
 None of these messages carried requirements, hints, approvals or fixes. Every technical
 decision in the room was made by the seats.
