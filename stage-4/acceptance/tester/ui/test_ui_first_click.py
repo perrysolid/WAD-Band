@@ -117,7 +117,7 @@ def _stray(page) -> list[str]:
     page.wait_for_timeout(400)
     return page.evaluate("""() => { const out = []; const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
         while (w.nextNode()) { const t = w.currentNode.textContent.trim();
-          if (/^(undefined|null|NaN|\\[object Object\\])$/.test(t) || /\\bundefined\\b|\\[object Object\\]|\\bNaN\\b/.test(t)) out.push(t.slice(0, 60)); }
+          if (/^(undefined|null|false|NaN|\\[object Object\\])$/.test(t) || /\\bundefined\\b|\\[object Object\\]|\\bNaN\\b/.test(t)) out.push(t.slice(0, 60)); }
         return out; }""")
 
 
