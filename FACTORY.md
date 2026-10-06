@@ -126,6 +126,7 @@ listed under Limitations, so they overstate the band's working time.
 | 2 | plan 5 Oct 03:44 → DELIVERED 6 Oct 01:02 (`6ff2e31`) | ~1.5 h | 0 on the build; 4 test defects found and fixed by the tester | stage 1 147/147, stage 2 35/35, stage 3 fail, `claimed stage: 2` |
 | 3 | re-dispatch 6 Oct 01:15 → ACCEPT `ed83c7f` ~01:45 | ~0.5 h | 1 (statement tie order used numeric-aware id comparison; spec says id ascending) | stages 1–3 pass, stage 4 fail, `claimed stage: 3` |
 | 4 | 01:22 (started in parallel with stage-3 review) → DELIVERED 01:49 (`7afca97`) | ~0.5 h | 2 (same tie order; batch revisions missing their batch id, and losing it across export/import) | stages 1–4 pass, `claimed stage: 4` |
+| 4 · UI upgrade | dispatch 6 Oct 02:10 → DELIVERED 06:37 (`c4cf6a7`), stalled 03:30–06:00 on the usage limit and a network outage | ~2 h | 2 (dropped first click and stray "undefined" on History; stray "null"/"false" and wiped outcome messages on payment detail) | stages 1–4 pass, `claimed stage: 4` |
 
 **Spend.** Band's local usage estimate at list prices (`band usage rooms`, not a bill) is about
 $470 for every local session on this machine across the event. That includes the practice
@@ -134,8 +135,8 @@ a room. The submitted room shows $52.84 attributed. Stage 1 and the first half o
 ran on `claude-opus-5-5` at high effort. From 5 Oct ~20:00 every seat ran `claude-sonnet-5-5`
 at medium effort, to stay inside the shared subscription's usage limit.
 
-**Volume (submitted room).** 98 messages: architect 42, developer 24, tester 15, reviewer 11,
-human 6 (listed below). 43 handoffs. Commits by seat: developer 19, tester 12, architect 6.
+**Volume (submitted room).** 118 messages: architect 47, developer 29, tester 20, reviewer 14,
+human 8 (listed below). 49 handoffs. Commits by seat: developer 26, tester 18, architect 6.
 Stage 3 and stage 4 ran on Sonnet in under an hour together: the architect started stage 4
 in parallel with stage 3's review and recorded it, and each stage still shipped only after
 its own reviewer ACCEPT.
@@ -165,6 +166,12 @@ its own reviewer ACCEPT.
   folders. The tester also fixed its oracle (`08aadc3`), so the defect cannot hide in the
   tests again. In stage 4 the reviewer also rejected batch-created revisions that did not
   expose their batch id, and checked that the id survives export and import.
+- **UI upgrade: the reviewer used the product like a person.** With every suite green, the
+  reviewer's by-hand walk found that the first click on History was silently dropped while the
+  wallet was still loading, and that an error left the word "undefined" on screen. The tester
+  then found "null" and "false" text nodes on the payment detail page, and success messages
+  wiped by the post-action reload. Two REJECTs; each defect came back as a failing test first
+  (`48dcd18`, `cb42744`), then a fix (`eb14351`, `c4cf6a7`).
 - **Tests are checked too.** At stage 1 the architect routed 3 of 6 failures back to the tester
   as test defects (empty bearer sent through an HTTP client that normalises it, among others).
   At stage 2 the tester traced all 4 failures against `6ff2e31` to its own tests and fixed them,
@@ -186,8 +193,9 @@ its own reviewer ACCEPT.
 
 ## Limitations
 
-**Human messages in the submitted room**, all listed here. The first is the dispatch. Four are
-operational restarts with no task content. One re-sends the original dispatch.
+**Human messages in the submitted room**, all listed here. The first is the dispatch. Five are
+operational restarts with no task content. One re-sends the original dispatch, and one is a
+separate product follow-up job given after all four stages were delivered.
 
 | Time (IST) | Message | Why |
 |---|---|---|
@@ -197,6 +205,8 @@ operational restarts with no task content. One re-sends the original dispatch.
 | 5 Oct 14:39 | "continue" to developer | same outage. The seats stayed disconnected until the Band service was restarted at 14:40 |
 | 6 Oct 00:58 | "Operational notice only: the model usage limit interrupted your turns … Resume …" | second usage-limit stall, 20:54 → 00:53 |
 | 6 Oct 01:15 | Re-send of the unchanged dispatch, with a status line and a time budget | switching models restarted the seats and cleared their context, and the architect reported it could not see a further job |
+| 6 Oct 02:10 | A scoped product follow-up job: upgrade the `stage-4/` browser UI (polish, History, payment detail with refund/correct, quick actions), with `stage-1/`–`stage-3/` frozen, the same gate, and a restore-to-`7afca97` fallback | a new job after all four stages were delivered; it is in [`dispatch.md`](dispatch.md) |
+| 6 Oct 06:03 | "Operational notice only: the usage limit interrupted your turns … and a network outage just ended. Resume …" | third usage-limit stall, 03:30 → 05:50, followed by a network outage |
 
 None of these messages carried requirements, hints, approvals or fixes. Every technical
 decision in the room was made by the seats.
@@ -204,9 +214,9 @@ decision in the room was made by the seats.
 **Other limitations**
 - The shipped checks cover only part of the graded suite (stage 3 ≈ 9%, stage 4 ≈ 16%).
   Our evidence beyond them is the tester's independent suites and the reviewer's probes.
-- Stage 3 and 4 add no new screens; the stage-2 UI carries over unchanged. The dispatch's
-  optional product extras for those stages (History screen, refund button) were skipped. The
-  architect judged them not worth the risk to accepted behaviour.
+- Only `stage-4/` has the upgraded UI (History, payment detail, refund and correct, quick
+  actions, dark mode). `stage-2/` and `stage-3/` keep the stage-2 UI as it was accepted, because
+  the follow-up job froze them to protect the chain.
 - The stage-1 folder carries the developer's product extras (request id header, structured
   access log, pre-commit invariant guard). The reviewer verified they change no response body.
 - State lives in memory. A container restart loses it, which the spec allows.

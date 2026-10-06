@@ -1,7 +1,7 @@
 # Dispatch
 
-The only human input of the submitted run. It is pasted once, to the architect seat, in a fresh
-room, and nothing else is sent until the architect's final report.
+The first human input of the submitted run. It was pasted once, to the architect seat, in a fresh
+room. Every later human message is listed, with its reason, in `FACTORY.md` → Limitations.
 
 ---
 
@@ -105,3 +105,27 @@ the unchanged dispatch text above:
 > Re-dispatch of the original job (unchanged text below). The seats were restarted after a usage-limit stall and lost the original dispatch, which named all four stages. This restores it; nothing else changes.
 >
 > Status: stage 1 (3761a81) and stage 2 (6ff2e31) are already accepted and delivered. Continue with stage 3, then stage 4, exactly as the job below says. Time budget: post DELIVERED for whatever is accepted by 08:00 IST (02:30 UTC) at the latest. A stage that is not reviewer-accepted and claiming its stage by then is reported as unmet, not shipped.
+
+
+## Third human input: product follow-up job (6 Oct 02:10 IST)
+
+After all four stages were delivered, one scoped job upgraded the browser UI in `stage-4/` only.
+It was posted unchanged:
+
+> @parthmishra0205/architect Product follow-up dispatch. This is a new, scoped job; the four delivered stages stand. Do not ask me anything; I will not reply until your report.
+>
+> Job: a product-quality upgrade of the browser UI in /Users/parth/Documents/band/stage-4/ only (branch main), built by the band (@parthmishra0205/developer, @parthmishra0205/tester, @parthmishra0205/reviewer) with the usual gate.
+>
+> Hard rules
+> - stage-1/, stage-2/ and stage-3/ are frozen. Change nothing in them.
+> - All stage 1–4 requirements still apply to stage-4/ (specs: /Users/parth/Documents/kickoff/pocketful/spec/stage-1.md … stage-4.md; paste what each seat needs into its handoff). Every specified route, data-testid, behaviour, API response and error stays exactly as it is now. Add no step between a click and a specified action (no confirmation dialogs).
+> - Everything ships in the image: no runtime network, no CDN fonts, scripts or styles. Within 2 vCPU / 2 GiB, healthy within 60 s.
+> - Gate: the tester extends the UI suite for every new screen and state; the reviewer ACCEPTs the exact commit after a clean --no-cache build, all earlier suites green, and `python -m harness run --track pocketful --repo /Users/parth/Documents/band --stage 4 --mode isolated --out /Users/parth/Documents/band-checks/s4-ui-<attempt>` (from /Users/parth/Documents/kickoff with `. .venv/bin/activate`) printing `claimed stage: 4`, plus a by-hand walk at 375 px and 1280 px in light and dark mode.
+>
+> Build, in priority order (stop where the time runs out; each item ships only if accepted)
+> 1. Visual polish in a calm, trustworthy consumer-finance style: a consistent type scale, spacing and colour system; initials avatars; feed items as sentences from the viewer's point of view ("You paid Bob", "Ada paid you"), note with emoji intact, a lock or globe icon for privacy, relative time with the exact time on hover; clear success toasts; distinct loading, empty, error, held, pending and uncertain states; dark mode that follows the system setting; on narrow screens a bottom tab bar and the pay form first, with the request and hold forms collapsed behind tabs or disclosure (still reachable without extra steps on the specified flows).
+> 2. History screen on its own route, linked from the navigation: balance as of a chosen date and time, and a paged statement for a date range showing opening balance, each entry with signed amount and running balance, and closing balance; snapshot paging so pages stay consistent.
+> 3. Payment detail view reachable from a feed item: parties, amount, note, privacy, time, and its revision history; a Refund action for the receiver and a Correct action for the sender, with the specified errors shown in plain language.
+> 4. Quick actions: "Pay again" on a sent payment and "Request again" on a received one, prefilling the forms; the split preview explains who carries the extra minor unit and why.
+>
+> Time limit: post DELIVERED by 07:30 IST (02:00 UTC). If stage-4/ is not reviewer-accepted at that time with `claimed stage: 4`, restore stage-4/ to commit 7afca97bb1da391e913b325ac16ca1bd446040f7 exactly, verify it claims stage 4 again, and report the upgrade as unmet. DELIVERED lists the accepted commit, what was built, what was skipped, and the runner result.
