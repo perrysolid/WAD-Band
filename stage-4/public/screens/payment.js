@@ -138,8 +138,9 @@ export function payment(id) {
     const money = (n) => formatMoney(n, me.minor_units, me.currency);
     const cur = revisions[revisions.length - 1];
     const sent = pay.from_user_id === me.user_id;
-    if (!forms || forms.rev !== cur.revision) forms = { rev: cur.revision, ...buildForms(me) };
-    box.append(
+    if (!forms) forms = buildForms(me);   // built once: a reload must not wipe a form's outcome message
+    if (forms.correct) forms.correct.controls.amount.placeholder = formatPlain(cur.amount, me.minor_units);
+    box.append(...[
       h('section', { class: 'card detail-head', 'aria-labelledby': 'payment-detail-title' },
         h('div', { class: 'item-id' }, avatar(sent ? pay.to_handle : pay.from_handle),
           h('div', {}, h('h2', { id: 'payment-detail-title', testid: 'payment-detail-sentence', text: sentence(pay, me.user_id) }),
@@ -160,7 +161,7 @@ export function payment(id) {
         pay.to_user_id === me.user_id && h('button', { type: 'button', class: 'btn btn-quiet btn-small', testid: 'payment-detail-request-again', text: 'Request again', onclick: () => { stashPrefill('request', pay, me); location.assign('/'); } })),
       forms.refund && forms.refund.el,
       forms.correct && forms.correct.el,
-      !forms.refund && !forms.correct && h('p', { class: 'fineprint', testid: 'payment-detail-no-actions', text: pay.refund_of || pay.authorization_id || pay.settlement_id ? 'This payment cannot be refunded or corrected from here.' : 'Only the person who received this payment can refund it, and only the sender can correct it.' }));
+      !forms.refund && !forms.correct && h('p', { class: 'fineprint', testid: 'payment-detail-no-actions', text: pay.refund_of || pay.authorization_id || pay.settlement_id ? 'This payment cannot be refunded or corrected from here.' : 'Only the person who received this payment can refund it, and only the sender can correct it.' })].filter(Boolean));
   }
 
   reload();
