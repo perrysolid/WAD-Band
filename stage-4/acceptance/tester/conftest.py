@@ -288,6 +288,11 @@ def new_page(browser, base_url):
 
     yield _new
     for c in contexts:
+        for pg in c.pages:      # delayed route callbacks must not outlive their context
+            try:
+                pg.unroute_all(behavior="ignoreErrors")
+            except Exception:
+                pass
         c.close()
 
 
