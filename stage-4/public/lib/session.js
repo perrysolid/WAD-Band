@@ -6,6 +6,13 @@ const listeners = new Set();
 
 export const onMe = (fn) => { listeners.add(fn); if (session.me) fn(session.me); };
 
+// Resolves with the wallet once it is loaded, or null if loading failed.
+export const whenMe = () => new Promise((resolve) => {
+  if (session.me) { resolve(session.me); return; }
+  const fn = (me, ok) => { if (me || ok === false) { listeners.delete(fn); resolve(me); } };
+  listeners.add(fn);
+});
+
 export function refreshMe() {
   return load('me', '/me', (r) => {
     if (r.outcome === 'ok') {

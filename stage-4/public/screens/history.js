@@ -2,7 +2,7 @@
 import { h, clear } from '../lib/dom.js';
 import { request, messageOf } from '../lib/api.js';
 import { formatMoney } from '../lib/money.js';
-import { session, onMe } from '../lib/session.js';
+import { session, onMe, whenMe } from '../lib/session.js';
 import { localToRfc3339, toMillis } from '../lib/instants.js';
 import { avatar, timeEl } from '../lib/ui.js';
 import { sentence } from './home.js';
@@ -33,13 +33,14 @@ export function history() {
 
   async function runAsOf(e) {
     e.preventDefault();
-    const me = session.me;
     clear(asofOut);
-    if (!me) { asofOut.append(h('p', { class: 'msg msg-info', role: 'status', text: 'Still loading your wallet. Try again in a moment.' })); return; }
     const rfc = localToRfc3339(asofField.input.value);
     if (!rfc) { asofOut.append(h('p', { class: 'msg msg-error', role: 'alert', testid: 'history-asof-error', text: 'Choose a date and time first.' })); return; }
     const mine = ++asofSeq;
     asofOut.append(h('p', { class: 'skeleton', testid: 'history-asof-loading', text: 'Looking up that moment…' }));
+    const me = session.me || await whenMe();
+    if (mine !== asofSeq) return;
+    if (!me) { clear(asofOut); asofOut.append(h('p', { class: 'msg msg-error', role: 'alert', testid: 'history-asof-error', text: 'We could not load your wallet. Try again.' })); return; }
     const r = await request('GET', `/me?as_of=${encodeURIComponent(rfc)}`);
     if (mine !== asofSeq) return;
     clear(asofOut);
@@ -75,7 +76,8 @@ export function history() {
 
   function fail(text, extra) {
     clear(out);
-    out.append(h('p', { class: 'msg msg-error', role: 'alert', testid: 'history-error', text }), extra);
+    out.append(h('p', { class: 'msg msg-error', role: 'alert', testid: 'history-error', text }));
+    if (extra) out.append(extra);
   }
 
   function entryRow(en, me) {
@@ -141,8 +143,6 @@ export function history() {
 
   async function runStatement(e) {
     e.preventDefault();
-    const me = session.me;
-    if (!me) { fail('Still loading your wallet. Try again in a moment.'); return; }
     const f = from.input.value ? localToRfc3339(from.input.value) : null;
     const t = to.input.value ? localToRfc3339(to.input.value) : null;
     if ((from.input.value && !f) || (to.input.value && !t)) { fail('One of the dates is not valid. Pick it again.'); return; }
@@ -151,8 +151,11 @@ export function history() {
     if (f) qs.set('from', f);
     if (t) qs.set('to', t);
     snapshot = null; offset = 0;
-    const r = await fetchPage(`/statement?${qs.toString()}`);
+    const pending = fetchPage(`/statement?${qs.toString()}`);
+    if (!session.me) await whenMe();
+    const r = await pending;
     if (!r) return;
+    if (!session.me) { fail('We could not load your wallet. Try again.'); return; }
     if (r.outcome === 'ok') { snapshot = r.body.snapshot || null; paint(r.body); return; }
     fail(r.outcome === 'uncertain' ? 'We could not reach the service. Try again.' : messageOf(r));
   }
